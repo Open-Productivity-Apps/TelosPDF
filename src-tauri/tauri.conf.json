@@ -1,0 +1,67 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "TelosPDF",
+  "version": "26.0.1",
+  "identifier": "app.telospdf",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @telos/shell dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm --filter @telos/shell build",
+    "frontendDist": "../packages/shell/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "TelosPDF",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 360,
+        "minHeight": 480,
+        "visible": false
+      },
+      {
+        "label": "splash",
+        "title": "TelosPDF",
+        "url": "/splash.html",
+        "width": 420,
+        "height": 300,
+        "resizable": false,
+        "decorations": false,
+        "center": true,
+        "visible": true,
+        "skipTaskbar": true,
+        "transparent": true,
+        "shadow": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' telos: http://telos.localhost data:; style-src 'self' 'unsafe-inline'"
+    },
+    "macOSPrivateApi": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "pdf"
+        ],
+        "mimeType": "application/pdf",
+        "description": "PDF document",
+        "role": "Viewer"
+      }
+    ],
+    "resources": {
+      "../.ocr": ".ocr",
+      "../.pdfium": ".pdfium"
+    }
+  }
+}

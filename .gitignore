@@ -1,0 +1,29 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# PDFium prebuilts (fetched by `cargo xtask fetch-pdfium`, pinned in xtask)
+/.pdfium/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Tauri
+/src-tauri/gen/schemas/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+
+# Test artifacts
+/crates/telos-render/tests/out/
+/.corpus/
+
+# OCR engine bundle (assembled by scripts/bundle-ocr.sh; shipped as a resource)
+/.ocr/
+
+# Internal planning docs (kept local, not published)
+/docs/

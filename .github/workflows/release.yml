@@ -1,0 +1,133 @@
+# Release: on tag push (v*), build UNSIGNED desktop bundles and publish them
+# to the GitHub release for that tag — macOS DMG (Apple Silicon) + Windows MSI.
+#
+# TODO later (PLAN.md §7):
+#   - macOS signing + notarization: APPLE_CERTIFICATE / APPLE_SIGNING_IDENTITY /
+#     App Store Connect API key secrets, then remove the "unsigned" note.
+#   - Windows: SignPath Foundation cert via bundle.windows.signCommand.
+#   - macOS Intel (mac-x64) job, Linux bundles (deb/rpm/AppImage), Android APK.
+#   - Updater: tauri-plugin-updater + minisign key (escrowed twice!) +
+#     includeUpdaterJson.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  desktop:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14 # Apple Silicon → aarch64 DMG
+            args: --bundles dmg
+          - os: macos-15-intel # Intel → x64 DMG
+            args: --bundles dmg
+          - os: windows-latest
+            args: --bundles msi
+          - os: ubuntu-22.04
+            args: --bundles deb,rpm,appimage
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux system deps (Tauri v2)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Fetch pinned PDFium (host platform)
+        run: cargo xtask fetch-pdfium
+
+      # Self-contained Tesseract shipped inside the bundle (macOS/Linux only).
+      - name: Bundle OCR engine (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install tesseract dylibbundler
+          ./scripts/bundle-ocr.sh
+
+      - name: Bundle OCR engine (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y tesseract-ocr patchelf
+          ./scripts/bundle-ocr.sh
+
+      # Notarization requires every Mach-O in the bundle to carry a Developer
+      # ID signature with hardened runtime + timestamp — sign the prebuilt
+      # PDFium/Tesseract binaries before the bundler copies them in.
+      - name: Sign bundled native binaries (macOS)
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > prebundle.p12
+          security create-keychain -p prebundlepass prebundle.keychain
+          security unlock-keychain -p prebundlepass prebundle.keychain
+          security import prebundle.p12 -k prebundle.keychain \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k prebundlepass prebundle.keychain > /dev/null
+          security list-keychains -d user -s prebundle.keychain login.keychain
+          rm prebundle.p12
+          find .pdfium .ocr -type f | while read -r f; do
+            if file "$f" | grep -q "Mach-O"; then
+              codesign --force --options runtime --timestamp \
+                --keychain prebundle.keychain \
+                -s "$APPLE_SIGNING_IDENTITY" "$f"
+            fi
+          done
+
+      # Windows has no bundled Tesseract yet — the app falls back to a system
+      # install. The placeholder keeps the `../.ocr` resource mapping valid.
+      - name: Stage OCR resource dir (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .ocr | Out-Null
+          Set-Content .ocr/README.txt "TelosPDF uses a system Tesseract install on Windows (winget install tesseract-ocr.tesseract)."
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS Developer ID signing.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # Notarization (removes the Gatekeeper first-launch prompt).
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "TelosPDF ${{ github.ref_name }}"
+          releaseBody: |
+            ## Which file do I download?
+
+            | Your system | Download |
+            |---|---|
+            | macOS — Apple Silicon (M1/M2/M3/M4) | the `.dmg` ending in `aarch64` |
+            | macOS — Intel | the `.dmg` ending in `x64` |
+            | Windows 10/11 (64-bit) | the `.msi` |
+            | Linux — Debian / Ubuntu | the `.deb` |
+            | Linux — Fedora / openSUSE | the `.rpm` |
+            | Linux — any distribution | the `.AppImage` |
+          releaseDraft: false
+          args: ${{ matrix.args }}

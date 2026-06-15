@@ -1,0 +1,53 @@
+# cargo-deny configuration — THE license gate (PLAN.md §1 principle 5).
+#
+# TelosPDF is MIT. Runtime dependencies must be permissive
+# (MIT/BSD/Apache/ISC/Zlib) or file-level weak copyleft (MPL-2.0).
+# AGPL/GPL/LGPL and OpenRAIL are hard failures — this catches the classic
+# traps (the GPL `pdfium` crate, Ghostscript wrappers, MuPDF bindings)
+# before they compile even once. CI runs this on every push.
+
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "Zlib",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "0BSD",
+]
+# Everything not in `allow` fails — including all GPL/AGPL/LGPL variants.
+
+[bans]
+multiple-versions = "warn"
+deny = [
+    # GPL-3.0 crate confusingly named like the engine we DO use
+    # (we use `pdfium-render`, which is MIT/Apache-2.0).
+    { crate = "pdfium", reason = "GPL-3.0 — banned; use pdfium-render (MIT/Apache-2.0)" },
+    # AGPL engines and their bindings — CI-oracle use only, never linked.
+    { crate = "mupdf", reason = "AGPL-3.0 — never link (PLAN.md banned list)" },
+    { crate = "mupdf-sys", reason = "AGPL-3.0 — never link (PLAN.md banned list)" },
+    { crate = "ghostscript", reason = "AGPL-3.0 — never link (PLAN.md banned list)" },
+    { crate = "poppler", reason = "GPL-2.0 — never link (PLAN.md banned list)" },
+    { crate = "poppler-rs", reason = "GPL-2.0 — never link (PLAN.md banned list)" },
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

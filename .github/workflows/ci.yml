@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # THE license gate (PLAN.md §1.5): AGPL/GPL anywhere in the graph fails CI.
+  license-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses bans sources
+
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux system deps (Tauri v2)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Frontend install + build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Fetch pinned PDFium
+        run: cargo xtask fetch-pdfium
+
+      # tauri-build validates the `../.ocr` resource mapping at compile time;
+      # CI builds don't ship OCR, so an empty dir satisfies it.
+      - name: Stage OCR resource dir
+        shell: bash
+        run: mkdir -p .ocr
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Corpus regression checks
+        run: cargo xtask corpus
+
+      - name: Typecheck frontend
+        run: pnpm typecheck
