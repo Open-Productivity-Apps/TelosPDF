@@ -1,0 +1,48 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/telos-core",
+    "crates/telos-doc",
+    "crates/telos-render",
+    "crates/telos-jobs",
+    "crates/telos-cli",
+    "src-tauri",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/Open-Productivity-Apps/TelosPDF"
+rust-version = "1.85"
+
+[workspace.dependencies]
+telos-core = { path = "crates/telos-core" }
+telos-doc = { path = "crates/telos-doc" }
+telos-render = { path = "crates/telos-render" }
+telos-jobs = { path = "crates/telos-jobs" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+lopdf = "0.43"
+# Default features select bindings for the newest supported PDFium build
+# (pdfium_latest = 7763 for 0.9.2); xtask's PDFIUM_TAG pins the matching
+# binary. Bump both together.
+pdfium-render = { version = "0.9.2", features = ["thread_safe", "image_025"] }
+pdf-writer = "0.15"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+tracing = "0.1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+# pdfium-render 0.9.2 casts to `*const i8` where c_char is unsigned
+# (aarch64-linux-android), breaking the Android build. One-line `.cast()`
+# fix in vendor/; drop the patch once fixed upstream.
+[patch.crates-io]
+pdfium-render = { path = "vendor/pdfium-render" }

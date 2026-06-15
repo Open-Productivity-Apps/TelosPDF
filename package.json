@@ -1,0 +1,14 @@
+{
+  "name": "telospdf-workspace",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter @telos/shell dev",
+    "build": "pnpm --filter @telos/shell build",
+    "typecheck": "pnpm --filter @telos/shell typecheck",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.0"
+  },
+  "packageManager": "pnpm@11.3.0"
+}

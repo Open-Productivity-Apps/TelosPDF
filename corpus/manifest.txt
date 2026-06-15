@@ -1,0 +1,7 @@
+# Remote corpus manifest — fetched by `cargo xtask corpus` into .corpus/remote/.
+# One entry per line: <url> <min_pages>
+# Grow this with real-world nasties: files that render wrong, open slowly, or
+# crash other viewers (PLAN.md §8). Keep files small and stable-hosted.
+#
+# Example (uncomment to enable):
+# https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf 1

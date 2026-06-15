@@ -1,0 +1,17 @@
+[package]
+name = "telos-render"
+description = "TelosPDF rendering service: PDFium tiles, thumbnails, text geometry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+pdfium-render.workspace = true
+image.workspace = true
+
+[dev-dependencies]
+telos-doc.workspace = true
+pdf-writer.workspace = true
