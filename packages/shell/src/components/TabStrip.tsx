@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { t, useLocale } from "../i18n";
+import { useUpdate } from "../update";
 import { useApp } from "../store";
 
 export default function TabStrip() {
@@ -36,6 +37,10 @@ export default function TabStrip() {
   const clearNotifications = useApp((s) => s.clearNotifications);
   useLocale();
   const [menuOpen, setMenuOpen] = useState(false);
+  const updateAvailable = useUpdate((s) => s.available);
+  const updatePhase = useUpdate((s) => s.phase);
+  const updateProgress = useUpdate((s) => s.progress);
+  const installUpdate = useUpdate((s) => s.installUpdate);
   const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
   const [bellOpen, setBellOpen] = useState(false);
   const [overflow, setOverflow] = useState(false);
@@ -200,6 +205,20 @@ export default function TabStrip() {
       )}
 
       <div className="tab-strip-right">
+        {updateAvailable && (
+          <button
+            className="update-btn"
+            title={`TelosPDF ${updateAvailable} ${updatePhase === "ready" ? t("is ready — click to restart") : t("is available")}`}
+            disabled={updatePhase === "downloading" || updatePhase === "restarting"}
+            onClick={() => void installUpdate()}
+          >
+            {updatePhase === "downloading"
+              ? `${Math.round(updateProgress * 100)}%`
+              : updatePhase === "restarting"
+                ? t("Restarting…")
+                : t("Update")}
+          </button>
+        )}
         <div className="tab-divider" />
         <div className="tab-create" ref={bellRef}>
           <button

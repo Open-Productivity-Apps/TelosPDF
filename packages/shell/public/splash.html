@@ -79,20 +79,32 @@
       <div class="tag">Open-source PDF workstation</div>
       <div class="bar"><div class="fill" id="fill"></div></div>
       <div class="pct" id="pct">0%</div>
+      <div class="pct" id="step">Loading…</div>
     </div>
     <script>
-      // Eases toward 90% while the main window boots; the window is closed
-      // by the backend (frontend_ready) which is the real 100%.
+      // Eases toward 85% while the main window boots. The main window then
+      // reports named boot steps (e.g. "Checking for updates…") over the
+      // boot-status event; the backend closing us (frontend_ready) is 100%.
       const fill = document.getElementById("fill");
       const pct = document.getElementById("pct");
+      const step = document.getElementById("step");
       let p = 0;
-      const timer = setInterval(() => {
-        const target = 92;
+      let timer = setInterval(() => {
+        const target = 85;
         p = Math.min(target, p + Math.max(0.6, (target - p) * 0.08));
         fill.style.width = p.toFixed(0) + "%";
         pct.textContent = fill.style.width;
         if (p >= target) clearInterval(timer);
       }, 50);
+      if (window.__TAURI__) {
+        window.__TAURI__.event.listen("boot-status", (e) => {
+          clearInterval(timer);
+          step.textContent = e.payload.label || "";
+          p = Math.max(p, e.payload.pct || p);
+          fill.style.width = p.toFixed(0) + "%";
+          pct.textContent = fill.style.width;
+        });
+      }
     </script>
   </body>
 </html>

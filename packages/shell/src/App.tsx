@@ -2,7 +2,7 @@
 // · tabbed viewer · right panel · right rail (nav panels + view controls) ·
 // status bar.
 import { useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import LeftSidebar from "./components/LeftSidebar";
 import TabStrip from "./components/TabStrip";
 import Viewer from "./components/Viewer";
@@ -14,11 +14,13 @@ import WelcomeView from "./components/WelcomeView";
 import CompareView from "./components/CompareView";
 import { commands, type DocumentInfo } from "./telos";
 import { LinkConfirmHost } from "./components/LinkConfirm";
+import { t, useLocale } from "./i18n";
 import { LocaleSwitchPrompt } from "./i18n/LocaleSwitchPrompt";
 import { detectRegion, regionDefaults } from "./lib/regionFormat";
 import { usePrefs } from "./prefs";
 import { useActiveDoc, useApp } from "./store";
-import { APP_BUILD, APP_VERSION } from "./version";
+import { useUpdate } from "./update";
+import { APP_BUILD, APP_VERSION, AUTO_UPDATE_SPLASH } from "./version";
 
 export default function App() {
   const doc = useActiveDoc();
@@ -28,11 +30,17 @@ export default function App() {
   const activeCompare = useApp((s) => s.activeCompare);
   const compareTabs = useApp((s) => s.compareTabs);
   const toast = useApp((s) => s.toast);
+  const ocrProgress = useApp((s) => s.ocrProgress);
   const busy = useApp((s) => s.busy);
   const showToast = useApp((s) => s.showToast);
   const reduceMotion = usePrefs((s) => s.reduceMotion);
   const theme = usePrefs((s) => s.theme);
   const oledDark = usePrefs((s) => s.oledDark);
+  const updateAvailable = useUpdate((s) => s.available);
+  const installUpdate = useUpdate((s) => s.installUpdate);
+  const checkForUpdate = useUpdate((s) => s.checkForUpdate);
+  useLocale();
+
 
   // Apply persisted preferences on launch (and live for reduce-motion).
   useEffect(() => {
@@ -45,6 +53,16 @@ export default function App() {
   }, [reduceMotion]);
 
   // Global translate-model download progress → store (survives tab switches).
+  // Unlimited-OCR page progress → persistent bottom progress card.
+  useEffect(() => {
+    const un = listen<{ page: number; pages: number }>("ocr-progress", (e) => {
+      useApp.setState({ ocrProgress: e.payload });
+    });
+    return () => {
+      void un.then((f) => f());
+    };
+  }, []);
+
   useEffect(() => {
     let last: { bytes: number; at: number } | null = null;
     const un = listen<{ downloaded: number; total: number }>("translate-model-progress", (e) => {
@@ -119,8 +137,35 @@ export default function App() {
     void listen<DocumentInfo>("open-file", (e) => addOpened(e.payload)).then(
       (fn) => (unlisten = fn),
     );
-    void commands
-      .frontendReady()
+    // Update check is a named splash step; capped so a slow network can't
+    // hold the app hostage. With AUTO_UPDATE_SPLASH a found update also
+    // downloads itself right here (retried on failure) — the Update button
+    // then only restarts into the new version.
+    void (async () => {
+      const splash = (label: string, pct: number) =>
+        emitTo("splash", "boot-status", { label, pct }).catch(() => {});
+      await splash(t("Checking for updates…"), 88);
+      await Promise.race([
+        checkForUpdate(),
+        new Promise((resolve) => setTimeout(resolve, 2500)),
+      ]);
+      if (AUTO_UPDATE_SPLASH) {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const upd = useUpdate.getState();
+          if (!upd.available || upd.phase !== "idle") break;
+          await splash(t("Downloading update…"), 90);
+          const staged = await upd.stageUpdate((frac) => {
+            void splash(
+              `${t("Downloading update…")} ${Math.round(frac * 100)}%`,
+              88 + Math.round(frac * 10),
+            );
+          });
+          if (staged) break;
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+      }
+      return commands.frontendReady();
+    })()
       .then((pending) => {
         pending.forEach(addOpened);
         // Session restore: reopen last session's files (crash recovery),
@@ -286,10 +331,33 @@ export default function App() {
         <div className="spacer" />
         <span className="status-version">
           TelosPDF {APP_VERSION} (Build {APP_BUILD})
+          {updateAvailable && (
+            <button className="status-update-link" onClick={() => void installUpdate()}>
+              {t("Update available")}
+            </button>
+          )}
         </span>
       </footer>
 
-      {toast && <div className="toast">{toast}</div>}
+      {toast && !ocrProgress && <div className="toast">{toast}</div>}
+
+      {ocrProgress &&
+        (() => {
+          const done = Math.min(ocrProgress.page - 1, ocrProgress.pages);
+          const pct = Math.round((done / Math.max(1, ocrProgress.pages)) * 100);
+          return (
+            <div className="toast ocr-toast">
+              <div>
+                {done >= ocrProgress.pages
+                  ? t("Finishing — adding the text layer…")
+                  : `${t("Running Unlimited-OCR")} — ${done}/${ocrProgress.pages} · ${pct}%`}
+              </div>
+              <div className="ocr-toast-bar">
+                <div className="ocr-toast-fill" style={{ width: `${pct}%` }} />
+              </div>
+            </div>
+          );
+        })()}
 
       {busy && (
         <div className="busy-overlay">

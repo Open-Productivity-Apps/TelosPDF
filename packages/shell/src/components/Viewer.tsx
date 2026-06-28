@@ -627,7 +627,11 @@ export default function Viewer() {
           const isCurrent = i === doc.currentPage;
           return (
             <div key={`${doc.info.id}-${i}`} className="page-slot" data-page={i}>
-              <div className="page-frame" style={{ width: cssW, height: cssH }}>
+              <div
+                className="page-frame"
+                style={{ width: cssW, height: cssH }}
+                data-loading={t("Loading…")}
+              >
                 {nearViewport && (
                   <img
                     className="page"

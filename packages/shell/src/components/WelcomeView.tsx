@@ -1,6 +1,6 @@
 // Welcome tab: brand + Start actions on the left, recent
 // files (name + directory) on the right.
-import { FilePlus2, FileText, FolderOpen } from "lucide-react";
+import { FilePlus2, FileText, FolderOpen, X } from "lucide-react";
 import { usePrefs } from "../prefs";
 import { t, useLocale } from "../i18n";
 import { useApp } from "../store";
@@ -60,16 +60,31 @@ export default function WelcomeView() {
         {recents.map((r) => {
           const { name, dir } = splitPath(r.path);
           return (
-            <button
+            <div
               key={r.path}
               className="recent-row"
+              role="button"
+              tabIndex={0}
               title={r.path}
               onClick={() => void openRecent(r.path)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void openRecent(r.path);
+              }}
             >
               <FileText size={15} strokeWidth={1.7} />
               <span className="recent-name">{name}</span>
               <span className="recent-dir">{dir}</span>
-            </button>
+              <button
+                className="recent-x"
+                title={t("Remove from Recent")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  removeRecent(r.path);
+                }}
+              >
+                <X size={13} strokeWidth={2} />
+              </button>
+            </div>
           );
         })}
       </div>

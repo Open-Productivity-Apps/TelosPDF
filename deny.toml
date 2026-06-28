@@ -26,6 +26,8 @@ allow = [
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "0BSD",
+    # Permissive data licence (Mozilla CA certificate list via webpki-root-certs).
+    "CDLA-Permissive-2.0",
 ]
 # Everything not in `allow` fails — including all GPL/AGPL/LGPL variants.
 

@@ -1,13 +1,7 @@
-# Release: on tag push (v*), build UNSIGNED desktop bundles and publish them
-# to the GitHub release for that tag — macOS DMG (Apple Silicon) + Windows MSI.
-#
-# TODO later (PLAN.md §7):
-#   - macOS signing + notarization: APPLE_CERTIFICATE / APPLE_SIGNING_IDENTITY /
-#     App Store Connect API key secrets, then remove the "unsigned" note.
-#   - Windows: SignPath Foundation cert via bundle.windows.signCommand.
-#   - macOS Intel (mac-x64) job, Linux bundles (deb/rpm/AppImage), Android APK.
-#   - Updater: tauri-plugin-updater + minisign key (escrowed twice!) +
-#     includeUpdaterJson.
+# Release: on tag push (v*), build signed desktop bundles and publish them to
+# the GitHub release for that tag — macOS DMGs (Apple Silicon + Intel),
+# Windows MSI, Linux deb/rpm/AppImage — plus signed updater artifacts and
+# latest.json for the in-app updater.
 name: Release
 
 on:
@@ -22,10 +16,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14 # Apple Silicon → aarch64 DMG
-            args: --bundles dmg
-          - os: macos-15-intel # Intel → x64 DMG
-            args: --bundles dmg
+          - os: macos-14 # Apple Silicon → aarch64 DMG (+ .app.tar.gz updater artifact)
+            args: --bundles app,dmg
+          - os: macos-15-intel # Intel → x64 DMG (+ .app.tar.gz updater artifact)
+            args: --bundles app,dmg
           - os: windows-latest
             args: --bundles msi
           - os: ubuntu-22.04
@@ -115,6 +109,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Updater artifact signing (minisign); latest.json is generated
+          # and merged across matrix jobs by tauri-action.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "TelosPDF ${{ github.ref_name }}"
@@ -123,11 +121,15 @@ jobs:
 
             | Your system | Download |
             |---|---|
-            | macOS — Apple Silicon (M1/M2/M3/M4) | the `.dmg` ending in `aarch64` |
+            | macOS — Apple Silicon (M1 and above) | the `.dmg` ending in `aarch64` |
             | macOS — Intel | the `.dmg` ending in `x64` |
             | Windows 10/11 (64-bit) | the `.msi` |
             | Linux — Debian / Ubuntu | the `.deb` |
             | Linux — Fedora / openSUSE | the `.rpm` |
             | Linux — any distribution | the `.AppImage` |
+
+            The `.tar.gz`, `.sig`, and `latest.json` files power the in-app
+            updater — you don't need to download them.
           releaseDraft: false
+          includeUpdaterJson: true
           args: ${{ matrix.args }}

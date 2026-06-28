@@ -44,16 +44,21 @@ import { Select } from "./Select";
 // Translate targets the model handles best; Latin script only (the output
 // PDF uses the built-in Helvetica font). value = English name fed to the
 // model; label = endonym, mirroring the language picker.
-const TRANSLATE_TARGETS: { value: string; label: string; code: string }[] = [
-  { value: "English", label: "English", code: "en-GB" },
-  { value: "Spanish", label: "Español", code: "es" },
-  { value: "French", label: "Français", code: "fr" },
-  { value: "German", label: "Deutsch", code: "de" },
-  { value: "Italian", label: "Italiano", code: "it" },
-  { value: "Portuguese", label: "Português", code: "pt-PT" },
-  { value: "Dutch", label: "Nederlands", code: "nl" },
-  { value: "Indonesian", label: "Bahasa Indonesia", code: "id" },
-  { value: "Swahili", label: "Kiswahili", code: "sw" },
+const TRANSLATE_TARGETS: { continent: string; items: { value: string; label: string; code: string }[] }[] = [
+  {
+    continent: "Europe",
+    items: [
+      { value: "English", label: "English", code: "en-GB" },
+      { value: "Spanish", label: "Español", code: "es" },
+      { value: "French", label: "Français", code: "fr" },
+      { value: "German", label: "Deutsch", code: "de" },
+      { value: "Italian", label: "Italiano", code: "it" },
+      { value: "Portuguese", label: "Português", code: "pt-PT" },
+      { value: "Dutch", label: "Nederlands", code: "nl" },
+    ],
+  },
+  { continent: "Asia", items: [{ value: "Indonesian", label: "Bahasa Indonesia", code: "id" }] },
+  { continent: "Africa", items: [{ value: "Swahili", label: "Kiswahili", code: "sw" }] },
 ];
 
 interface Tool {
@@ -229,7 +234,7 @@ export default function LeftSidebar() {
                 showToast(t("Download the Unlimited-OCR model first: Settings → OCR."));
                 return;
               }
-              showToast(t("Running Unlimited-OCR — this can take a little while per page…"));
+              useApp.setState({ ocrProgress: { page: 1, pages: doc.info.pages } });
             }
             try {
               const info = await commands.ocrDocument(doc.info.id, doc.info.title, engine);
@@ -241,6 +246,8 @@ export default function LeftSidebar() {
               );
             } catch (e) {
               showToast(String(e));
+            } finally {
+              useApp.setState({ ocrProgress: null });
             }
           })();
         });
@@ -420,12 +427,15 @@ export default function LeftSidebar() {
                 className="lang-select-control"
                 searchable
                 searchPlaceholder="Search languages…"
-                options={TRANSLATE_TARGETS.map((l) => ({
-                  value: l.value,
-                  label: l.label,
-                  hint: l.value === l.label ? undefined : l.value,
-                  icon: <FlagIcon code={l.code} />,
-                }))}
+                options={TRANSLATE_TARGETS.flatMap(({ continent, items }) => [
+                  { value: `__hdr_${continent}`, label: continent, disabled: true, header: true },
+                  ...items.map((l) => ({
+                    value: l.value,
+                    label: l.label,
+                    hint: l.value === l.label ? undefined : l.value,
+                    icon: <FlagIcon code={l.code} />,
+                  })),
+                ])}
               />
             </div>
             {translating && (

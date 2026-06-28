@@ -646,7 +646,17 @@ function AboutSection() {
         <>
           <Row
             title="TelosPDF"
-            description="Open-source PDF workstation · MIT license · Developed by Siddharth Sharma"
+            description={
+              <>
+                {t("Open-source PDF workstation · MIT license · Developed by")}{" "}
+                <button
+                  className="inline-link"
+                  onClick={() => confirmExternalLink("https://isiddharthasharma.github.io/")}
+                >
+                  Siddharth Sharma
+                </button>
+              </>
+            }
           >
             <span className="status-pill">{`v${APP_VERSION} (Build ${APP_BUILD})`}</span>
           </Row>

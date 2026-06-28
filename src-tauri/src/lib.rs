@@ -1889,10 +1889,10 @@ async fn translate_document(
     language: String,
     title: String,
     engine: Option<String>,
-    apiKey: Option<String>,
+    api_key: Option<String>,
 ) -> Result<DocumentInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        translate_document_blocking(app, id, language, title, engine, apiKey)
+        translate_document_blocking(app, id, language, title, engine, api_key)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2081,17 +2081,31 @@ fn ocr_document_unlimited(
         let png_path = tmp.join(format!("p{i}.png"));
         std::fs::write(&png_path, png).map_err(|e| e.to_string())?;
 
-        let out = std::process::Command::new(&mtmd)
-            .arg("-m")
-            .arg(&model)
-            .arg("--mmproj")
-            .arg(&mmproj)
-            .arg("--image")
-            .arg(&png_path)
-            .args(["-p", "<|grounding|>OCR this image.", "--temp", "0", "-n", "8192", "-c", "16384", "-ngl", "99"])
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|e| format!("running llama-mtmd-cli: {e}"))?;
+        // --jinja: the model ships a chat template the legacy parser rejects.
+        let run = |ngl: &str| {
+            std::process::Command::new(&mtmd)
+                .arg("-m")
+                .arg(&model)
+                .arg("--mmproj")
+                .arg(&mmproj)
+                .arg("--image")
+                .arg(&png_path)
+                .args(["--jinja", "-p", "<|grounding|>OCR this image.", "--temp", "0", "-n", "8192", "-c", "16384", "-ngl", ngl])
+                .stdin(std::process::Stdio::null())
+                .output()
+                .map_err(|e| format!("running llama-mtmd-cli: {e}"))
+        };
+        // Metal can OOM on smaller machines — and worse, sometimes exits 0
+        // with corrupted output. Detect either and redo the page on CPU.
+        let mut out = run("99")?;
+        let gpu_broken = {
+            let err = String::from_utf8_lossy(&out.stderr);
+            err.contains("Insufficient Memory")
+                || (err.contains("ggml_metal") && err.contains("error"))
+        };
+        if !out.status.success() || gpu_broken {
+            out = run("0")?;
+        }
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
             let tail: String = err.lines().rev().take(4).collect::<Vec<_>>().join(" | ");
@@ -2100,6 +2114,11 @@ fn ocr_document_unlimited(
         let text = String::from_utf8_lossy(&out.stdout);
         pages.push(parse_grounding(&text, *w_pt, *h_pt));
     }
+    // All pages recognised (100%); the text layer is still being written.
+    let _ = app.emit(
+        "ocr-progress",
+        serde_json::json!({ "page": sizes.len() + 1, "pages": sizes.len() }),
+    );
     let _ = std::fs::remove_dir_all(&tmp);
 
     let dest = work_dir()?.join(format!("{id}-ocr.pdf"));
@@ -3005,6 +3024,8 @@ fn handle_telos_request(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         // ASYNC protocol: rendering must never run on the main event loop —
         // a synchronous handler beachballs the whole app (zoom, resize,
         // menus) for every page render.

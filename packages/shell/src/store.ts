@@ -76,6 +76,8 @@ interface AppState {
   /** Bumped to ask the viewer to scroll to a page. */
   scrollRequest: { page: number; nonce: number } | null;
   toast: string | null;
+  /** Unlimited-OCR run progress (persistent bar); null when not running. */
+  ocrProgress: { page: number; pages: number } | null;
   /** Toast history captured for the notification bell. */
   notifications: { id: number; text: string; at: string }[];
   clearNotifications: () => void;
@@ -197,6 +199,7 @@ export const useApp = create<AppState>((set, get) => ({
   effectiveZoom: 1,
   scrollRequest: null,
   toast: null,
+  ocrProgress: null,
   notifications: [],
   focusedComment: null,
   selectedComment: null,
