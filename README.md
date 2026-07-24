@@ -32,14 +32,13 @@
 ## Download
 
 Grab the latest from [Releases](https://github.com/Open-Productivity-Apps/TelosPDF/releases):
-macOS (`.dmg`, Apple Silicon & Intel), Windows (`.msi`), Linux (`.deb`/`.rpm`/AppImage).
+macOS (universal `.dmg` — Intel & Apple Silicon), Windows (`.msi`), Linux (`.deb`/`.rpm`/AppImage).
 
 ## System requirements
 
 | Platform | Minimum |
 |---|---|
-| macOS (Apple Silicon) | macOS 11 Big Sur or later |
-| macOS (Intel) | macOS 11 Big Sur or later, 64-bit |
+| macOS — Intel & Apple Silicon (one universal app) | macOS 11 Big Sur or later |
 | Windows | Windows 10 (1803) or later, 64-bit, WebView2 (installed automatically) |
 | Linux | 64-bit distro with WebKitGTK 4.1 (Ubuntu 22.04+, Fedora 36+, or equivalent) |
 

@@ -1,7 +1,8 @@
 # Release: on tag push (v*), build signed desktop bundles and publish them to
-# the GitHub release for that tag — macOS DMGs (Apple Silicon + Intel),
-# Windows MSI, Linux deb/rpm/AppImage — plus signed updater artifacts and
-# latest.json for the in-app updater.
+# the GitHub release for that tag — Windows MSI + Linux deb/rpm/AppImage —
+# plus signed updater artifacts and latest.json for the in-app updater.
+# The macOS build is a single signed & notarized UNIVERSAL dmg (Intel +
+# Apple Silicon) produced and uploaded from the release machine.
 name: Release
 
 on:
@@ -16,10 +17,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14 # Apple Silicon → aarch64 DMG (+ .app.tar.gz updater artifact)
-            args: --bundles app,dmg
-          - os: macos-15-intel # Intel → x64 DMG (+ .app.tar.gz updater artifact)
-            args: --bundles app,dmg
           - os: windows-latest
             args: --bundles msi
           - os: ubuntu-22.04
@@ -52,45 +49,13 @@ jobs:
       - name: Fetch pinned PDFium (host platform)
         run: cargo xtask fetch-pdfium
 
-      # Self-contained Tesseract shipped inside the bundle (macOS/Linux only).
-      - name: Bundle OCR engine (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install tesseract dylibbundler
-          ./scripts/bundle-ocr.sh
-
+      # Self-contained Tesseract shipped inside the bundle (Linux only here;
+      # the macOS universal build bundles it on the release machine).
       - name: Bundle OCR engine (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y tesseract-ocr patchelf
           ./scripts/bundle-ocr.sh
-
-      # Notarization requires every Mach-O in the bundle to carry a Developer
-      # ID signature with hardened runtime + timestamp — sign the prebuilt
-      # PDFium/Tesseract binaries before the bundler copies them in.
-      - name: Sign bundled native binaries (macOS)
-        if: runner.os == 'macOS'
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: |
-          echo "$APPLE_CERTIFICATE" | base64 --decode > prebundle.p12
-          security create-keychain -p prebundlepass prebundle.keychain
-          security unlock-keychain -p prebundlepass prebundle.keychain
-          security import prebundle.p12 -k prebundle.keychain \
-            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: \
-            -s -k prebundlepass prebundle.keychain > /dev/null
-          security list-keychains -d user -s prebundle.keychain login.keychain
-          rm prebundle.p12
-          find .pdfium .ocr -type f | while read -r f; do
-            if file "$f" | grep -q "Mach-O"; then
-              codesign --force --options runtime --timestamp \
-                --keychain prebundle.keychain \
-                -s "$APPLE_SIGNING_IDENTITY" "$f"
-            fi
-          done
 
       # Windows has no bundled Tesseract yet — the app falls back to a system
       # install. The placeholder keeps the `../.ocr` resource mapping valid.
@@ -104,14 +69,6 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS Developer ID signing.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          # Notarization (removes the Gatekeeper first-launch prompt).
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           # Updater artifact signing (minisign); latest.json is generated
           # and merged across matrix jobs by tauri-action.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -124,8 +81,7 @@ jobs:
 
             | Your system | Download |
             |---|---|
-            | macOS — Apple Silicon (M1 and above) | the `.dmg` ending in `aarch64` |
-            | macOS — Intel | the `.dmg` ending in `x64` |
+            | macOS — Intel & Apple Silicon (one universal app) | the `.dmg` |
             | Windows 10/11 (64-bit) | the `.msi` |
             | Linux — Debian / Ubuntu | the `.deb` |
             | Linux — Fedora / openSUSE | the `.rpm` |
