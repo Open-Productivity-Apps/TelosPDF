@@ -92,3 +92,15 @@ jobs:
           releaseDraft: false
           includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+      # The in-app updater can't update system packages, so deb/rpm
+      # signatures are dead weight on the release page — drop them.
+      - name: Trim unusable updater signatures (deb/rpm)
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          for a in "TelosPDF_${v}_amd64.deb.sig" "TelosPDF-${v}-1.x86_64.rpm.sig"; do
+            gh release delete-asset "$GITHUB_REF_NAME" "$a" -y --repo "$GITHUB_REPOSITORY" || true
+          done
