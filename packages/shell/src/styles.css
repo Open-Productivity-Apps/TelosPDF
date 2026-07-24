@@ -3845,3 +3845,27 @@ body,
 .reduce-motion .page-frame::before {
   animation-duration: 1.6s;
 }
+
+/* About → TelosPDF: what's-new changelog card. */
+.changelog {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.changelog-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.changelog-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}

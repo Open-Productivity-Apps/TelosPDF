@@ -18,7 +18,11 @@ TelosPDF is built on the open-source work of others.
 | [flag-icons](https://github.com/lipis/flag-icons) | Language/region flags | MIT |
 | [Tesseract](https://github.com/tesseract-ocr/tesseract) | Bundled OCR engine; also the glyphless font used for invisible text layers | Apache-2.0 |
 | [Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR) (Baidu) | Optional downloadable OCR model | MIT |
-| [llama.cpp](https://github.com/ggml-org/llama.cpp) | Optional downloadable inference runtime for Unlimited-OCR | MIT |
+| [Qwen3](https://huggingface.co/Qwen/Qwen3-1.7B-GGUF) (Alibaba) | Optional downloadable model powering local PDF translation | Apache-2.0 |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | Inference runtime for the OCR and translation models | MIT |
+| [Tauri plugins](https://github.com/tauri-apps/plugins-workspace) | Dialogs, in-app updates, restart, link opening | MIT / Apache-2.0 |
+| [Vite](https://vite.dev) | Frontend build tooling | MIT |
+| [TypeScript](https://www.typescriptlang.org) | Typed interface code | Apache-2.0 |
 | [LibreOffice](https://www.libreoffice.org) | Office ↔ PDF conversion | MPL-2.0 |
 | [docx-rs](https://github.com/bokuweb/docx-rs) | .docx writing (PDF → Word export) | MIT |
 | [similar](https://github.com/mitsuhiko/similar) | Text diffing (Compare files) | Apache-2.0 |

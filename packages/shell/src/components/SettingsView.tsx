@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { ExternalLink, Github, Search } from "lucide-react";
 import licenseText from "../../../../LICENSE?raw";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { t, useLocale } from "../i18n";
 import { LanguageSelect, LanguageDisclaimer } from "../i18n/LanguageSelect";
 import { confirmExternalLink } from "./LinkConfirm";
@@ -591,10 +592,26 @@ const ENGINES: Engine[] = [
   { name: "Tauri", version: "2", role: "Cross-platform shell (Rust core + system webview).", license: "MIT / Apache-2.0", repo: "https://github.com/tauri-apps/tauri", site: "https://tauri.app" },
   { name: "React", version: "19", role: "Workbench interface.", license: "MIT", repo: "https://github.com/facebook/react", site: "https://react.dev" },
   { name: "Lucide", version: "0.525", role: "Icon set.", license: "ISC", repo: "https://github.com/lucide-icons/lucide", site: "https://lucide.dev" },
-  { name: "Tesseract", version: "5", role: "OCR engine (bundled) for Scan & OCR.", license: "Apache-2.0", repo: "https://github.com/tesseract-ocr/tesseract", site: "https://tesseract-ocr.github.io" },
+  { name: "pdfium-binaries", version: "chromium/7763", role: "Prebuilt PDFium libraries for every platform.", license: "Apache-2.0", repo: "https://github.com/bblanchon/pdfium-binaries", site: "https://github.com/bblanchon/pdfium-binaries" },
+  { name: "Tauri plugins", version: "2", role: "Dialogs, in-app updates, restart, and link opening.", license: "MIT / Apache-2.0", repo: "https://github.com/tauri-apps/plugins-workspace", site: "https://tauri.app/plugin/" },
+  { name: "zustand", version: "5", role: "UI state management.", license: "MIT", repo: "https://github.com/pmndrs/zustand", site: "https://zustand.docs.pmnd.rs" },
+  { name: "flag-icons", version: "7", role: "Language and region flags.", license: "MIT", repo: "https://github.com/lipis/flag-icons", site: "https://flagicons.lipis.dev" },
+  { name: "Vite", version: "7", role: "Frontend build tooling.", license: "MIT", repo: "https://github.com/vitejs/vite", site: "https://vite.dev" },
+  { name: "TypeScript", version: "5", role: "Typed interface code.", license: "Apache-2.0", repo: "https://github.com/microsoft/TypeScript", site: "https://www.typescriptlang.org" },
+  { name: "Tesseract", version: "5", role: "OCR engine (bundled) for Scan & OCR; also the glyphless font used for invisible text layers.", license: "Apache-2.0", repo: "https://github.com/tesseract-ocr/tesseract", site: "https://tesseract-ocr.github.io" },
+  { name: "Unlimited-OCR (Baidu)", version: "3B", role: "Optional downloadable OCR model for scans, tables & CJK.", license: "MIT", repo: "https://huggingface.co/baidu/Unlimited-OCR", site: "https://huggingface.co/baidu/Unlimited-OCR" },
+  { name: "Qwen3 (Alibaba)", version: "1.7B", role: "Optional downloadable model powering local PDF translation.", license: "Apache-2.0", repo: "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF", site: "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF" },
+  { name: "llama.cpp", version: "b10092", role: "Inference runtime for the OCR and translation models.", license: "MIT", repo: "https://github.com/ggml-org/llama.cpp", site: "https://github.com/ggml-org/llama.cpp" },
   { name: "LibreOffice", version: "system", role: "Office ↔ PDF conversion.", license: "MPL-2.0", repo: "https://github.com/LibreOffice/core", site: "https://www.libreoffice.org" },
   { name: "docx-rs", version: "0.4", role: "Writes .docx (PDF to Word text export).", license: "MIT", repo: "https://github.com/bokuweb/docx-rs", site: "https://crates.io/crates/docx-rs" },
   { name: "similar", version: "2", role: "Text diffing.", license: "Apache-2.0", repo: "https://github.com/mitsuhiko/similar", site: "https://crates.io/crates/similar" },
+];
+
+/** What shipped in the running version — shown under About → TelosPDF. */
+const CHANGELOG: string[] = [
+  "External links now open directly in your browser — with Copy still one click away.",
+  "About now shows a what's-new changelog for every release.",
+  "Acknowledgements — complete engine credits: Unlimited-OCR (Baidu), Qwen3 (Alibaba), llama.cpp, Tauri plugins, and more.",
 ];
 
 /** Popup shown for external links (the webview never navigates away). */
@@ -609,13 +626,22 @@ function LinkModal({ name, url, onClose }: { name: string; url: string; onClose:
           <button
             className="modal-primary"
             onClick={() => {
+              void openUrl(url).catch(() => {});
+              onClose();
+            }}
+          >
+            {t("Open link")}
+          </button>
+          <button
+            className="modal-secondary"
+            onClick={() => {
               void navigator.clipboard.writeText(url).then(() => setCopied(true));
             }}
           >
-            {copied ? "Copied!" : "Copy link"}
+            {copied ? t("Copied!") : t("Copy link")}
           </button>
           <button className="modal-secondary" onClick={onClose}>
-            Close
+            {t("Close")}
           </button>
         </div>
       </div>
@@ -660,12 +686,20 @@ function AboutSection() {
           >
             <span className="status-pill">{`v${APP_VERSION} (Build ${APP_BUILD})`}</span>
           </Row>
+
+          <div className="changelog">
+            <h4 className="changelog-title">{`${t("What's new in")} ${APP_VERSION}`}</h4>
+            <ul className="changelog-list">
+              {CHANGELOG.map((line) => (
+                <li key={line}>{t(line)}</li>
+              ))}
+            </ul>
+          </div>
         </>
       )}
 
       {tab === "ack" && (
         <>
-          <p className="settings-blurb">TelosPDF is built on the open-source work of others.</p>
           {ENGINES.map((e) => (
             <Row key={e.name} title={`${e.name} · ${e.version}`} description={e.role}>
               <span className="status-pill">{e.license}</span>

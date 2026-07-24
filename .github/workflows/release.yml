@@ -25,6 +25,9 @@ jobs:
           - os: ubuntu-22.04
             args: --bundles deb,rpm,appimage
     runs-on: ${{ matrix.os }}
+    # codesign/notarization can wedge on hosted runners — fail fast instead
+    # of burning the 6-hour default.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
