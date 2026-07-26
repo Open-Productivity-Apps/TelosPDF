@@ -32,7 +32,8 @@
 ## Download
 
 Grab the latest from [Releases](https://github.com/Open-Productivity-Apps/TelosPDF/releases):
-macOS (universal `.dmg` — Intel & Apple Silicon), Windows (`.msi`), Linux (`.deb`/`.rpm`/AppImage).
+macOS (universal `.dmg` — Intel & Apple Silicon), Windows (`-setup.exe`, installs per-user with no
+administrator prompt), Linux (`.deb`/`.rpm`/AppImage).
 
 ## System requirements
 

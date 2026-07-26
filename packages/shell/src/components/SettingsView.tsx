@@ -10,6 +10,7 @@ import { LanguageSelect, LanguageDisclaimer } from "../i18n/LanguageSelect";
 import { confirmExternalLink } from "./LinkConfirm";
 import { usePrefs, type ThemePref } from "../prefs";
 import { useApp, type FitMode } from "../store";
+import { useUpdate, UP_TO_DATE_COOLDOWN_MS } from "../update";
 import { commands, type OcrModelStatus } from "../telos";
 import { isMac } from "../lib/platform";
 import { AppSelect } from "./AppSelect";
@@ -594,7 +595,10 @@ const ENGINES: Engine[] = [
 
 /** What shipped in the running version — shown under About → TelosPDF. */
 const CHANGELOG: string[] = [
-  "The app now ships its own UI font (Inter), so text and controls line up identically on Windows, macOS and Linux.",
+  "Windows now installs just for you — no administrator prompt, and updates apply without the installer reappearing.",
+  "The window no longer opens taller than the screen, so it can't hide behind the Windows taskbar.",
+  "About has a Check for updates button, which rests for six hours once it confirms you're up to date.",
+  "The app ships its own UI font (Inter), so text and controls line up identically on Windows, macOS and Linux.",
   "Model downloads no longer flash Command Prompt windows on Windows — every helper process runs hidden.",
   "The Unlimited-OCR download keeps running (and keeps reporting progress) when you switch settings tabs or close Settings.",
   "Shortcut hints and hardware notes now describe your own platform instead of always saying Cmd / Apple Silicon.",
@@ -635,6 +639,86 @@ function LinkModal({ name, url, onClose }: { name: string; url: string; onClose:
   );
 }
 
+/** "5h 42m" / "42m" / "1m" — coarse on purpose, the cooldown ticks per minute. */
+function formatRemaining(ms: number): string {
+  const mins = Math.max(1, Math.ceil(ms / 60_000));
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+/**
+ * Manual update check, sat beside the version pill. Once a check answers "up
+ * to date" the button goes quiet for six hours (UP_TO_DATE_COOLDOWN_MS) rather
+ * than letting the user hammer the GitHub endpoint — a found update or a
+ * failed check leaves it immediately clickable.
+ */
+function UpdateCheckButton() {
+  useLocale();
+  const available = useUpdate((s) => s.available);
+  const phase = useUpdate((s) => s.phase);
+  const checking = useUpdate((s) => s.checking);
+  const upToDateAt = useUpdate((s) => s.upToDateAt);
+  const checkFailed = useUpdate((s) => s.checkFailed);
+  const checkNow = useUpdate((s) => s.checkNow);
+  const installUpdate = useUpdate((s) => s.installUpdate);
+
+  // Re-render while the cooldown runs down so the countdown stays honest;
+  // the interval retires itself once it expires.
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (upToDateAt === null) return;
+    const id = setInterval(() => {
+      if (Date.now() - upToDateAt >= UP_TO_DATE_COOLDOWN_MS) clearInterval(id);
+      tick((n) => n + 1);
+    }, 30_000);
+    return () => clearInterval(id);
+  }, [upToDateAt]);
+
+  const remaining =
+    upToDateAt === null ? 0 : UP_TO_DATE_COOLDOWN_MS - (Date.now() - upToDateAt);
+  const cooling = remaining > 0;
+
+  if (available) {
+    const busy = phase === "downloading" || phase === "restarting";
+    return (
+      <button className="modal-primary" disabled={busy} onClick={() => void installUpdate()}>
+        {phase === "downloading"
+          ? t("Downloading…")
+          : phase === "restarting"
+            ? t("Restarting…")
+            : phase === "ready"
+              ? t("Restart to update")
+              : `${t("Update to")} v${available}`}
+      </button>
+    );
+  }
+
+  return (
+    <>
+      {cooling && (
+        <span className="update-check-hint">{`${t("Checked recently · again in")} ${formatRemaining(remaining)}`}</span>
+      )}
+      {checkFailed && !checking && (
+        <span className="update-check-hint failed">{t("Couldn't check")}</span>
+      )}
+      <button
+        className="modal-secondary"
+        disabled={checking || cooling}
+        title={
+          cooling
+            ? t("You're on the latest version — TelosPDF will check again later.")
+            : t("Check GitHub for a newer release")
+        }
+        onClick={() => void checkNow()}
+      >
+        {checking ? t("Checking…") : cooling ? t("Up to date") : t("Check for updates")}
+      </button>
+    </>
+  );
+}
+
 function AboutSection() {
   const [tab, setTab] = useState<"app" | "ack" | "license">("app");
   const [link, setLink] = useState<{ name: string; url: string } | null>(null);
@@ -671,6 +755,7 @@ function AboutSection() {
             }
           >
             <span className="status-pill">{`v${APP_VERSION} (Build ${APP_BUILD})`}</span>
+            <UpdateCheckButton />
           </Row>
 
           <div className="changelog">

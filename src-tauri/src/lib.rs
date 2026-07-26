@@ -3037,6 +3037,44 @@ fn handle_telos_request(
     }
 }
 
+/// Shrink the main window to fit the screen it opens on, then centre it there.
+///
+/// The configured 1280×820 is bigger than the usable area of a 1366×768 laptop
+/// panel, so on Windows the frame ran off the bottom and sat under the taskbar
+/// with no way to reach the status bar. `work_area()` is the monitor rect
+/// MINUS the taskbar/dock/panel, so clamping to it fixes that without
+/// second-guessing where the taskbar lives. A no-op on displays big enough to
+/// hold the configured size, which is why it runs on every platform.
+fn fit_main_window_to_screen(app: &tauri::AppHandle) {
+    let Some(win) = app.get_webview_window("main") else { return };
+    let monitor = match win.current_monitor() {
+        Ok(Some(m)) => Some(m),
+        _ => win.primary_monitor().ok().flatten(),
+    };
+    let Some(monitor) = monitor else { return };
+    let area = *monitor.work_area();
+    let Ok(size) = win.outer_size() else { return };
+
+    // Breathing room so the frame never sits flush against a screen edge.
+    const MARGIN: u32 = 48;
+    let max_w = area.size.width.saturating_sub(MARGIN).max(360);
+    let max_h = area.size.height.saturating_sub(MARGIN).max(480);
+    if size.width <= max_w && size.height <= max_h {
+        return;
+    }
+
+    let w = size.width.min(max_w);
+    let h = size.height.min(max_h);
+    if win.set_size(tauri::PhysicalSize::new(w, h)).is_err() {
+        return;
+    }
+    // Centre inside the WORK area, not the raw monitor rect — centring on the
+    // full screen would push the bottom edge back under the taskbar.
+    let x = area.position.x + (area.size.width.saturating_sub(w) / 2) as i32;
+    let y = area.position.y + (area.size.height.saturating_sub(h) / 2) as i32;
+    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3138,6 +3176,7 @@ pub fn run() {
             get_annotations
         ])
         .setup(|app| {
+            fit_main_window_to_screen(app.handle());
             // Windows/Linux (and dev): associated files arrive as argv.
             let handle = app.handle().clone();
             for arg in std::env::args().skip(1) {

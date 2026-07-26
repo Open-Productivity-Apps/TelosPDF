@@ -1,5 +1,5 @@
 # Release: on tag push (v*), build signed desktop bundles and publish them to
-# the GitHub release for that tag — Windows MSI + Linux deb/rpm/AppImage —
+# the GitHub release for that tag — Windows NSIS setup + Linux deb/rpm/AppImage —
 # plus signed updater artifacts and latest.json for the in-app updater.
 # The macOS build is a single signed & notarized UNIVERSAL dmg (Intel +
 # Apple Silicon) produced and uploaded from the release machine.
@@ -18,7 +18,7 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            args: --bundles msi
+            args: --bundles nsis
           - os: ubuntu-22.04
             args: --bundles deb,rpm,appimage
     runs-on: ${{ matrix.os }}
@@ -82,13 +82,22 @@ jobs:
             | Your system | Download |
             |---|---|
             | macOS — Intel & Apple Silicon (one universal app) | the `.dmg` |
-            | Windows 10/11 (64-bit) | the `.msi` |
+            | Windows 10/11 (64-bit) | the `-setup.exe` |
             | Linux — Debian / Ubuntu | the `.deb` |
             | Linux — Fedora / openSUSE | the `.rpm` |
             | Linux — any distribution | the `.AppImage` |
 
             The `.tar.gz`, `.sig`, and `latest.json` files power the in-app
             updater — you don't need to download them.
+
+            ### Windows: one-time cleanup
+
+            TelosPDF now installs **just for you**, with no administrator
+            prompt. If you installed an earlier version from the old `.msi`,
+            that copy lives in `Program Files` and the new one does not
+            replace it — open **Settings → Apps → Installed apps**, and
+            uninstall the older `TelosPDF` entry once. You only need to do
+            this a single time.
           releaseDraft: false
           includeUpdaterJson: true
           args: ${{ matrix.args }}

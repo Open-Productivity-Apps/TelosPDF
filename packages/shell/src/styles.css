@@ -1562,6 +1562,23 @@ body,
   cursor: pointer;
 }
 
+.modal-primary:disabled,
+.modal-secondary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Cooldown countdown beside the About → Check for updates button. */
+.update-check-hint {
+  font-size: 11px;
+  color: var(--tab-inactiveForeground);
+  white-space: nowrap;
+}
+
+.update-check-hint.failed {
+  color: var(--danger);
+}
+
 /* ── Status bar & toast ──────────────────────────────────── */
 .status-bar {
   grid-column: 1 / -1;
