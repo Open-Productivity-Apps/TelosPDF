@@ -80,6 +80,26 @@ export default function App() {
     };
   }, []);
 
+  // Same for the Unlimited-OCR model: listening here (not in the Settings OCR
+  // section) is what keeps the progress bar alive after the user switches
+  // settings tabs or closes Settings mid-download.
+  useEffect(() => {
+    let last: { bytes: number; at: number } | null = null;
+    const un = listen<{ downloaded: number; total: number }>("ocr-model-progress", (e) => {
+      const now = performance.now();
+      let speed = useApp.getState().ocrDlSpeed;
+      if (last && now > last.at) {
+        const inst = ((e.payload.downloaded - last.bytes) / (now - last.at)) * 1000;
+        if (inst >= 0) speed = speed === 0 ? inst : speed * 0.7 + inst * 0.3;
+      }
+      last = { bytes: e.payload.downloaded, at: now };
+      useApp.setState({ ocrDlProgress: e.payload, ocrDlSpeed: speed });
+    });
+    return () => {
+      void un.then((f) => f());
+    };
+  }, []);
+
   // Region "Auto": re-seed the format defaults only when the detected region
   // actually changes, so manual overrides made while on Auto survive.
   useEffect(() => {

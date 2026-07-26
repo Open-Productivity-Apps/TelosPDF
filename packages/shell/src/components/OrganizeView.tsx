@@ -10,6 +10,7 @@ import {
   Save,
   Trash2,
 } from "lucide-react";
+import { t } from "../i18n";
 import { commands, pageUrl } from "../telos";
 import { useApp, type OpenDoc } from "../store";
 
@@ -127,7 +128,7 @@ export default function OrganizeView({ doc }: { doc: OpenDoc }) {
         <span className="editor-hint">
           {selected.length > 0
             ? `${selected.length} page(s) selected`
-            : "Click to select · Cmd-click multi · Shift-click range · drag to reorder"}
+            : t("Click to select · Cmd-click multi · Shift-click range · drag to reorder")}
         </span>
         <div className="spacer" />
         <input

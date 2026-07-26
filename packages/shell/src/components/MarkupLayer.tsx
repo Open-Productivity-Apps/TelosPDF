@@ -3,6 +3,7 @@
 // PDFium path/text objects. Coordinates convert from overlay pixels to PDF
 // points (bottom-left origin) on commit.
 import { useRef, useState } from "react";
+import { t } from "../i18n";
 import { commands } from "../telos";
 import { useApp, type OpenDoc } from "../store";
 
@@ -229,7 +230,7 @@ export default function MarkupLayer({
             <button className="modal-secondary" onClick={() => setText(null)}>
               Cancel
             </button>
-            <span className="markup-hint">⌘↵ to add</span>
+            <span className="markup-hint">{t("⌘↵ to add")}</span>
           </div>
         </div>
       )}

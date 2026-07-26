@@ -1,8 +1,7 @@
 // Settings: MyBI-style full-page view — nav with search on the left
 // (APP SETTINGS: General, Accessibility, Developer options, About),
 // section content on the right, close button back to the workbench.
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useEffect, useState, type ReactNode } from "react";
 import { ExternalLink, Github, Search } from "lucide-react";
 import licenseText from "../../../../LICENSE?raw";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -12,6 +11,7 @@ import { confirmExternalLink } from "./LinkConfirm";
 import { usePrefs, type ThemePref } from "../prefs";
 import { useApp, type FitMode } from "../store";
 import { commands, type OcrModelStatus } from "../telos";
+import { isMac } from "../lib/platform";
 import { AppSelect } from "./AppSelect";
 import { Select } from "./Select";
 import {
@@ -319,42 +319,19 @@ const GB = 1024 * 1024 * 1024;
 
 function OcrSection() {
   const prefs = usePrefs();
-  const showToast = useApp((s) => s.showToast);
   const [model, setModel] = useState<OcrModelStatus | null>(null);
-  const [downloading, setDownloading] = useState(false);
-  const [progress, setProgress] = useState<{ downloaded: number; total: number } | null>(null);
-  const [speed, setSpeed] = useState(0);
-  const lastTick = useRef<{ bytes: number; at: number } | null>(null);
+  // Download state lives in the store and the progress events are subscribed
+  // in App — leaving this tab (or Settings entirely) must not interrupt a
+  // 2.5 GB fetch, exactly like the translation model.
+  const downloading = useApp((s) => s.ocrDlActive);
+  const progress = useApp((s) => s.ocrDlProgress);
+  const speed = useApp((s) => s.ocrDlSpeed);
+  const dlBump = useApp((s) => s.ocrDlBump);
+  const download = useApp((s) => s.startOcrDl);
 
   useEffect(() => {
     commands.ocrModelStatus().then(setModel, () => {});
-    const un = listen<{ downloaded: number; total: number }>("ocr-model-progress", (e) => {
-      setProgress(e.payload);
-      // Download speed from event deltas, lightly smoothed.
-      const now = performance.now();
-      const last = lastTick.current;
-      if (last && now > last.at) {
-        const inst = ((e.payload.downloaded - last.bytes) / (now - last.at)) * 1000;
-        if (inst >= 0) setSpeed((s) => (s === 0 ? inst : s * 0.7 + inst * 0.3));
-      }
-      lastTick.current = { bytes: e.payload.downloaded, at: now };
-    });
-    return () => {
-      void un.then((f) => f());
-    };
-  }, []);
-
-  const download = () => {
-    setDownloading(true);
-    commands
-      .downloadOcrModel()
-      .then((st) => {
-        setModel(st);
-        showToast("Unlimited-OCR model installed.");
-      })
-      .catch((e) => showToast(String(e)))
-      .finally(() => setDownloading(false));
-  };
+  }, [dlBump]);
 
   return (
     <>
@@ -441,7 +418,14 @@ function OcrSection() {
             <tr>
               <td>Speed per page</td>
               <td>1–3 s on any CPU</td>
-              <td>2–10 s on Apple Silicon / GPU; 30–60 s CPU-only</td>
+              {/* Only the macOS llama.cpp build we ship is GPU-accelerated
+                  (Metal); the Windows and Linux runtimes are CPU builds, so
+                  quoting Apple Silicon numbers there would be wrong. */}
+              <td>
+                {isMac
+                  ? "2–10 s on Apple Silicon (Metal-accelerated); 30–60 s on Intel"
+                  : "30–60 s — the bundled runtime is CPU-only on this platform"}
+              </td>
             </tr>
             <tr>
               <td>Memory</td>
@@ -596,6 +580,7 @@ const ENGINES: Engine[] = [
   { name: "Tauri plugins", version: "2", role: "Dialogs, in-app updates, restart, and link opening.", license: "MIT / Apache-2.0", repo: "https://github.com/tauri-apps/plugins-workspace", site: "https://tauri.app/plugin/" },
   { name: "zustand", version: "5", role: "UI state management.", license: "MIT", repo: "https://github.com/pmndrs/zustand", site: "https://zustand.docs.pmnd.rs" },
   { name: "flag-icons", version: "7", role: "Language and region flags.", license: "MIT", repo: "https://github.com/lipis/flag-icons", site: "https://flagicons.lipis.dev" },
+  { name: "Inter", version: "4 (variable)", role: "Bundled UI typeface — identical text metrics on every platform.", license: "SIL OFL-1.1", repo: "https://github.com/rsms/inter", site: "https://rsms.me/inter/" },
   { name: "Vite", version: "7", role: "Frontend build tooling.", license: "MIT", repo: "https://github.com/vitejs/vite", site: "https://vite.dev" },
   { name: "TypeScript", version: "5", role: "Typed interface code.", license: "Apache-2.0", repo: "https://github.com/microsoft/TypeScript", site: "https://www.typescriptlang.org" },
   { name: "Tesseract", version: "5", role: "OCR engine (bundled) for Scan & OCR; also the glyphless font used for invisible text layers.", license: "Apache-2.0", repo: "https://github.com/tesseract-ocr/tesseract", site: "https://tesseract-ocr.github.io" },
@@ -609,9 +594,10 @@ const ENGINES: Engine[] = [
 
 /** What shipped in the running version — shown under About → TelosPDF. */
 const CHANGELOG: string[] = [
-  "External links now open directly in your browser — with Copy still one click away.",
-  "About now shows a what's-new changelog for every release.",
-  "Acknowledgements — complete engine credits: Unlimited-OCR (Baidu), Qwen3 (Alibaba), llama.cpp, Tauri plugins, and more.",
+  "The app now ships its own UI font (Inter), so text and controls line up identically on Windows, macOS and Linux.",
+  "Model downloads no longer flash Command Prompt windows on Windows — every helper process runs hidden.",
+  "The Unlimited-OCR download keeps running (and keeps reporting progress) when you switch settings tabs or close Settings.",
+  "Shortcut hints and hardware notes now describe your own platform instead of always saying Cmd / Apple Silicon.",
 ];
 
 /** Popup shown for external links (the webview never navigates away). */

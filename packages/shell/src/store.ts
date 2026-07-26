@@ -149,6 +149,13 @@ interface AppState {
   /** Bumps when a download finishes — consumers re-query install status. */
   translateDlBump: number;
   startTranslateDl: () => void;
+  /** Unlimited-OCR model download — same deal: the ~2.5 GB fetch must keep
+   * running (and keep reporting) when the user leaves the OCR settings tab. */
+  ocrDlActive: boolean;
+  ocrDlProgress: { downloaded: number; total: number } | null;
+  ocrDlSpeed: number;
+  ocrDlBump: number;
+  startOcrDl: () => void;
   pendingPlacements: PendingPlacement[];
   placedLog: PlacedRecord[];
   addPlacement: (p: Omit<PendingPlacement, "id">) => void;
@@ -500,6 +507,19 @@ export const useApp = create<AppState>((set, get) => ({
       .finally(() =>
         set((s) => ({ translateDlActive: false, translateDlBump: s.translateDlBump + 1 })),
       );
+  },
+  ocrDlActive: false,
+  ocrDlProgress: null,
+  ocrDlSpeed: 0,
+  ocrDlBump: 0,
+  startOcrDl: () => {
+    if (get().ocrDlActive) return;
+    set({ ocrDlActive: true, ocrDlProgress: null, ocrDlSpeed: 0 });
+    void commands
+      .downloadOcrModel()
+      .then(() => get().showToast("Unlimited-OCR model installed."))
+      .catch((e) => get().showToast(String(e)))
+      .finally(() => set((s) => ({ ocrDlActive: false, ocrDlBump: s.ocrDlBump + 1 })));
   },
   pendingPlacements: [],
   placedLog: [],

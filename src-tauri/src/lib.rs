@@ -23,6 +23,23 @@ use tauri::http::{Response, StatusCode, header};
 use tauri_plugin_dialog::DialogExt;
 use telos_core::{Renderer, TelosDocument};
 
+/// Every subprocess the app runs (curl, tar, tesseract, llama, soffice, the
+/// print helpers) must go through this instead of `std::process::Command::new`
+/// — on Windows a console subsystem child pops a Command Prompt window, so a
+/// model download flashes a wall of them. CREATE_NO_WINDOW keeps them
+/// invisible; on macOS/Linux it's a plain Command.
+fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// Structural (lopdf) model. Parsed lazily on the first edit — parsing a
 /// large file up front is exactly what made opening lag.
 enum Model {
@@ -419,7 +436,7 @@ fn resolve_soffice() -> Option<PathBuf> {
         .map(PathBuf::from)
         .find(|p| p.is_absolute() && p.exists())
         .or_else(|| {
-            std::process::Command::new("soffice")
+            command("soffice")
                 .arg("--version")
                 .output()
                 .ok()
@@ -442,7 +459,7 @@ fn soffice_convert(
     std::fs::create_dir_all(out_dir).map_err(|e| e.to_string())?;
     // A private profile dir avoids clashing with a running LibreOffice.
     let profile = out_dir.join("lo-profile");
-    let mut cmd = std::process::Command::new(&soffice);
+    let mut cmd = command(&soffice);
     cmd.arg("--headless").arg("--norestore").arg(format!(
         "-env:UserInstallation=file://{}",
         profile.display()
@@ -1462,7 +1479,7 @@ fn kill_stale_download(part: &std::path::Path) {
     #[cfg(unix)]
     {
         if let Some(name) = part.file_name().and_then(|n| n.to_str()) {
-            let _ = std::process::Command::new("pkill").args(["-f", name]).status();
+            let _ = command("pkill").args(["-f", name]).status();
             std::thread::sleep(std::time::Duration::from_millis(300));
         }
     }
@@ -1474,7 +1491,7 @@ fn kill_stale_download(part: &std::path::Path) {
 
 /// Content-Length of a remote file (final redirect target), if reported.
 fn remote_size(url: &str) -> Option<u64> {
-    let out = std::process::Command::new("curl")
+    let out = command("curl")
         .args(["-sIL", url])
         .output()
         .ok()?;
@@ -1519,7 +1536,7 @@ fn download_ocr_model_blocking(app: tauri::AppHandle) -> Result<OcrModelStatus, 
         }
         let part = dir.join(format!("{name}.part"));
         kill_stale_download(&part);
-        let mut child = std::process::Command::new("curl")
+        let mut child = command("curl")
             .args([
                 "--fail",
                 "--location",
@@ -1558,7 +1575,7 @@ fn download_ocr_model_blocking(app: tauri::AppHandle) -> Result<OcrModelStatus, 
         std::fs::create_dir_all(&runtime_dir).map_err(|e| e.to_string())?;
         let archive = runtime_dir.join(runtime_asset);
         kill_stale_download(&archive);
-        let mut child = std::process::Command::new("curl")
+        let mut child = command("curl")
             .args([
                 "--fail",
                 "--location",
@@ -1586,7 +1603,7 @@ fn download_ocr_model_blocking(app: tauri::AppHandle) -> Result<OcrModelStatus, 
         }
         // bsdtar (macOS/Windows) reads both .tar.gz and .zip; GNU tar covers
         // the Linux .tar.gz.
-        let status = std::process::Command::new("tar")
+        let status = command("tar")
             .arg("-xf")
             .arg(&archive)
             .arg("-C")
@@ -1615,7 +1632,7 @@ fn download_ocr_model_blocking(app: tauri::AppHandle) -> Result<OcrModelStatus, 
 /// (binary, None) for a system tesseract that finds its own data.
 fn resolve_tesseract() -> Option<(PathBuf, Option<PathBuf>)> {
     let runs = |bin: &std::path::Path, tessdata: Option<&std::path::Path>| -> bool {
-        let mut c = std::process::Command::new(bin);
+        let mut c = command(bin);
         if let Some(d) = tessdata {
             c.env("TESSDATA_PREFIX", d);
         }
@@ -1744,7 +1761,7 @@ fn cloud_translate(text: &str, target: &str, key: &str) -> Result<String, String
     use std::io::Write;
     let body =
         serde_json::json!({ "q": text, "target": target, "format": "text" }).to_string();
-    let mut child = std::process::Command::new("curl")
+    let mut child = command("curl")
         .args(["-s", "-X", "POST", "-H", "Content-Type: application/json", "--data-binary", "@-"])
         .arg(format!(
             "https://translation.googleapis.com/language/translate/v2?key={key}"
@@ -1809,7 +1826,7 @@ fn download_translate_model_blocking(app: tauri::AppHandle) -> Result<OcrModelSt
     if !std::fs::metadata(&dest).map(|m| m.len() >= min).unwrap_or(false) {
         let part = dir.join(format!("{name}.part"));
         kill_stale_download(&part);
-        let mut child = std::process::Command::new("curl")
+        let mut child = command("curl")
             .args(["--fail", "--location", "--silent", "--show-error", "--continue-at", "-", "--output"])
             .arg(&part)
             .arg(url)
@@ -1835,7 +1852,7 @@ fn download_translate_model_blocking(app: tauri::AppHandle) -> Result<OcrModelSt
         std::fs::create_dir_all(&runtime_dir).map_err(|e| e.to_string())?;
         let archive = runtime_dir.join(runtime_asset);
         kill_stale_download(&archive);
-        let mut child = std::process::Command::new("curl")
+        let mut child = command("curl")
             .args(["--fail", "--location", "--silent", "--show-error", "--continue-at", "-", "--output"])
             .arg(&archive)
             .arg(&runtime_url)
@@ -1853,7 +1870,7 @@ fn download_translate_model_blocking(app: tauri::AppHandle) -> Result<OcrModelSt
                 None => std::thread::sleep(std::time::Duration::from_millis(300)),
             }
         }
-        let status = std::process::Command::new("tar")
+        let status = command("tar")
             .arg("-xf").arg(&archive).arg("-C").arg(&runtime_dir)
             .status()
             .map_err(|e| format!("running tar: {e}"))?;
@@ -1990,7 +2007,7 @@ fn translate_document_blocking(
         let prompt = format!(
             "Translate the following document text into {language}. Output ONLY the translation. /no_think\n\n{text}"
         );
-        let mut child = std::process::Command::new(&cli)
+        let mut child = command(&cli)
             .arg("-m")
             .arg(&model)
             .args(["--temp", "0.2", "--repeat-penalty", "1.15", "-n", "3072", "-c", "8192", "-ngl", "99", "--no-display-prompt", "-st", "-p"])
@@ -2083,7 +2100,7 @@ fn ocr_document_unlimited(
 
         // --jinja: the model ships a chat template the legacy parser rejects.
         let run = |ngl: &str| {
-            std::process::Command::new(&mtmd)
+            command(&mtmd)
                 .arg("-m")
                 .arg(&model)
                 .arg("--mmproj")
@@ -2177,11 +2194,11 @@ async fn ocr_document(
         std::fs::write(&png_path, png).map_err(|e| e.to_string())?;
 
         let out_base = tmp.join(format!("p{i}"));
-        let mut command = std::process::Command::new(&tesseract);
+        let mut cmd = command(&tesseract);
         if let Some(dir) = &tessdata {
-            command.env("TESSDATA_PREFIX", dir);
+            cmd.env("TESSDATA_PREFIX", dir);
         }
-        let status = command
+        let status = cmd
             .arg(&png_path)
             .arg(&out_base)
             .arg("pdf")
@@ -2481,7 +2498,7 @@ struct PrinterList {
 fn list_printers() -> PrinterList {
     #[cfg(not(target_os = "windows"))]
     {
-        let printers = std::process::Command::new(cups_bin("lpstat"))
+        let printers = command(cups_bin("lpstat"))
             .arg("-a")
             .output()
             .ok()
@@ -2493,7 +2510,7 @@ fn list_printers() -> PrinterList {
                     .collect()
             })
             .unwrap_or_default();
-        let default = std::process::Command::new(cups_bin("lpstat"))
+        let default = command(cups_bin("lpstat"))
             .arg("-d")
             .output()
             .ok()
@@ -2541,7 +2558,7 @@ async fn print_document(id: u32, options: PrintOptions) -> Result<(), String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let mut cmd = std::process::Command::new(cups_bin("lp"));
+        let mut cmd = command(cups_bin("lp"));
         cmd.arg("-n").arg(copies.to_string());
         if let Some(name) = options.printer.as_deref().filter(|p| !p.is_empty()) {
             cmd.arg("-d").arg(name);
@@ -2581,7 +2598,7 @@ async fn print_document(id: u32, options: PrintOptions) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let _ = options;
-        let status = std::process::Command::new("cmd")
+        let status = command("cmd")
             .args(["/C", "start", "/min", ""])
             .arg("/print")
             .arg(&work)
@@ -2600,7 +2617,7 @@ async fn print_document(id: u32, options: PrintOptions) -> Result<(), String> {
 fn cancel_print_job(job_id: String) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
     {
-        let out = std::process::Command::new(cups_bin("cancel"))
+        let out = command(cups_bin("cancel"))
             .arg(&job_id)
             .output()
             .map_err(|e| format!("could not cancel: {e}"))?;
@@ -2633,7 +2650,7 @@ struct PrintJob {
 fn print_queue() -> Vec<PrintJob> {
     #[cfg(not(target_os = "windows"))]
     {
-        let text = std::process::Command::new(cups_bin("lpstat"))
+        let text = command(cups_bin("lpstat"))
             .arg("-o")
             .output()
             .ok()
@@ -2817,7 +2834,7 @@ fn user_identities() -> Vec<String> {
         names.push(login);
     }
     #[cfg(target_os = "macos")]
-    if let Ok(out) = std::process::Command::new("id").arg("-F").output()
+    if let Ok(out) = command("id").arg("-F").output()
         && out.status.success()
         && let Ok(full) = String::from_utf8(out.stdout)
     {

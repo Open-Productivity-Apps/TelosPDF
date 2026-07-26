@@ -16,6 +16,7 @@ TelosPDF is built on the open-source work of others.
 | [Lucide](https://lucide.dev) | Icon set | ISC |
 | [zustand](https://github.com/pmndrs/zustand) | UI state | MIT |
 | [flag-icons](https://github.com/lipis/flag-icons) | Language/region flags | MIT |
+| [Inter](https://rsms.me/inter/) | Bundled UI typeface — identical text metrics on every platform | SIL OFL-1.1 |
 | [Tesseract](https://github.com/tesseract-ocr/tesseract) | Bundled OCR engine; also the glyphless font used for invisible text layers | Apache-2.0 |
 | [Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR) (Baidu) | Optional downloadable OCR model | MIT |
 | [Qwen3](https://huggingface.co/Qwen/Qwen3-1.7B-GGUF) (Alibaba) | Optional downloadable model powering local PDF translation | Apache-2.0 |

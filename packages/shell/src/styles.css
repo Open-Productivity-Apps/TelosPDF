@@ -24,7 +24,11 @@
   /* RGB channels for the "surface tint" overlays (white on dark themes,
      near-black on light) — used as rgba(var(--tint), α) throughout. */
   --tint: 255, 255, 255;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  /* Inter Variable ships with the app (see main.tsx) so macOS, Windows and
+     Linux get identical metrics. The system fonts stay in the stack purely as
+     fallback for the scripts Inter has no glyphs for (CJK, Arabic, Indic…). */
+  font-family: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, "Noto Sans", sans-serif;
   font-size: 13px;
   color-scheme: dark;
 }
@@ -72,6 +76,20 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+/* Form controls do NOT inherit typography — every engine substitutes its own
+   platform UI font at its own size, which is why buttons and segmented
+   controls sat a pixel or two off (and in the wrong face) on Windows. Force
+   them onto the app's font. */
+button,
+input,
+select,
+textarea,
+optgroup {
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
 }
 
 html,

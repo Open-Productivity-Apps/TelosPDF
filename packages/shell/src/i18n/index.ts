@@ -12,6 +12,7 @@
 
 import { useEffect, useState } from "react";
 
+import { localizeShortcuts } from "../lib/platform";
 import { LANGUAGES, DEFAULT_LOCALE, SOURCE_LOCALE, isLocale, isRtl, type LocaleCode } from "./languages";
 
 function applyDocLang(code: LocaleCode): void {
@@ -129,12 +130,17 @@ function toUsSpelling(s: string): string {
   });
 }
 
-/** Translate `key` (the en-GB source string): override → bundled → en-US auto-spelling → the key. */
+/**
+ * Translate `key` (the en-GB source string): override → bundled → en-US auto-spelling → the key.
+ * The result then goes through `localizeShortcuts` so the ⌘/Cmd notation written in the source
+ * strings reads as Ctrl on Windows and Linux — the KEY keeps the mac spelling, so every existing
+ * `languages/*.json` catalogue stays valid.
+ */
 export function t(key: string, locale: LocaleCode = current): string {
   const hit = OVERRIDES[locale]?.[key] ?? BUNDLED[locale]?.[key] ?? BUNDLED[SOURCE_LOCALE]?.[key];
-  if (hit != null) return hit;
-  if (locale === "en-US") return toUsSpelling(key); // no catalogue needed — spelling-transform en-GB
-  return key;
+  if (hit != null) return localizeShortcuts(hit);
+  if (locale === "en-US") return localizeShortcuts(toUsSpelling(key)); // no catalogue — spelling-transform en-GB
+  return localizeShortcuts(key);
 }
 
 /**

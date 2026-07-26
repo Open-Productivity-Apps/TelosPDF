@@ -63,7 +63,7 @@ function SignaturesPanel() {
           <>
             <div className="panel-subhead">
               {t("Unsaved")} ({pending.length})
-              <button className="link-btn" title="Remove last (⌘Z)" onClick={undoPlacement}>
+              <button className="link-btn" title={t("Remove last (⌘Z)")} onClick={undoPlacement}>
                 {t("Undo")}
               </button>
             </div>
