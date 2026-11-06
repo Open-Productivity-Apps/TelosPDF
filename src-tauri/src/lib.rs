@@ -117,9 +117,10 @@ struct DocRegistry {
     docs: HashMap<u32, DocEntry>,
 }
 
-/// Files opened via OS association before the frontend was ready.
-static PENDING_OPENS: LazyLock<Mutex<Vec<DocumentInfo>>> = LazyLock::new(|| Mutex::new(Vec::new()));
-static FRONTEND_READY: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(false));
+/// Paths the OS asked us to open before the frontend could take them. `None`
+/// once it has booted — from then on they go out as "open-path" events.
+static PENDING_OPENS: LazyLock<Mutex<Option<Vec<String>>>> =
+    LazyLock::new(|| Mutex::new(Some(Vec::new())));
 
 static REGISTRY: LazyLock<Mutex<DocRegistry>> = LazyLock::new(|| {
     Mutex::new(DocRegistry {
@@ -679,26 +680,27 @@ async fn export_images(app: tauri::AppHandle, id: u32) -> Result<Option<u32>, St
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct TextSegmentEntry {
-    /// (x, y, width, height) in PDF points, origin bottom-left.
+struct TextWordEntry {
     bounds: (f32, f32, f32, f32),
     text: String,
+    line: u32,
 }
 
 #[tauri::command]
-async fn get_text_segments(id: u32, page_index: u32) -> Result<Vec<TextSegmentEntry>, String> {
+async fn get_text_words(id: u32, page_index: u32) -> Result<Vec<TextWordEntry>, String> {
     let work = {
         let reg = REGISTRY.lock().unwrap();
         reg.docs.get(&id).ok_or("unknown document")?.work().clone()
     };
-    let segments = renderer()?
-        .text_segments(&work, page_index)
+    let words = renderer()?
+        .text_words(&work, page_index)
         .map_err(|e| e.to_string())?;
-    Ok(segments
+    Ok(words
         .into_iter()
-        .map(|s| TextSegmentEntry {
-            bounds: s.bounds,
-            text: s.text,
+        .map(|w| TextWordEntry {
+            bounds: w.bounds,
+            text: w.text,
+            line: w.line,
         })
         .collect())
 }
@@ -732,38 +734,44 @@ async fn combine_documents(app: tauri::AppHandle) -> Result<Option<DocumentInfo>
     open_at(out, false).map(Some)
 }
 
-/// Open a path arriving from the OS (file association / argv): deliver to
-/// the frontend if it's ready, else queue for frontend_ready.
+/// Bring the main window forward, restoring it if minimised.
+fn reveal_main(app: &tauri::AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.unminimize();
+        let _ = main.show();
+        let _ = main.set_focus();
+    }
+}
+
+/// Open a path arriving from the OS (file association / argv). The frontend
+/// does the opening, so these files get the same password prompt and error
+/// reporting as the in-app Open flow; until it has booted, they wait for
+/// frontend_ready.
 fn open_external(app: &tauri::AppHandle, path: PathBuf) {
-    if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("pdf") {
+    let is_pdf = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
+    if !is_pdf || !path.is_file() {
         return;
     }
-    match open_at(path, true) {
-        Ok(info) => {
-            let ready = *FRONTEND_READY.lock().unwrap();
-            if ready {
-                let _ = app.emit_to("main", "open-file", info);
-            } else {
-                PENDING_OPENS.lock().unwrap().push(info);
-            }
-        }
-        Err(e) => eprintln!("open-external failed: {e}"),
+    let path = path.to_string_lossy().into_owned();
+    if let Some(queue) = PENDING_OPENS.lock().unwrap().as_mut() {
+        queue.push(path);
+        return;
     }
+    let _ = app.emit_to("main", "open-path", path);
+    reveal_main(app);
 }
 
 /// Frontend booted: close the splash, show the main window, and hand over
 /// any documents the OS asked us to open meanwhile.
 #[tauri::command]
-async fn frontend_ready(app: tauri::AppHandle) -> Result<Vec<DocumentInfo>, String> {
-    *FRONTEND_READY.lock().unwrap() = true;
+async fn frontend_ready(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     if let Some(splash) = app.get_webview_window("splash") {
         let _ = splash.close();
     }
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.show();
-        let _ = main.set_focus();
-    }
-    Ok(std::mem::take(&mut *PENDING_OPENS.lock().unwrap()))
+    reveal_main(&app);
+    Ok(PENDING_OPENS.lock().unwrap().take().unwrap_or_default())
 }
 
 /// macOS: LaunchServices default-handler check/set for PDFs. Other
@@ -1037,7 +1045,7 @@ struct CompressResult {
     path: String,
     before: u64,
     after: u64,
-    images_downsampled: u32,
+    images_recompressed: u32,
 }
 
 /// Write a compressed copy via Save As. `target_dpi = None` is the
@@ -1047,6 +1055,7 @@ async fn compress_document(
     app: tauri::AppHandle,
     id: u32,
     target_dpi: Option<u32>,
+    jpeg_quality: Option<u8>,
     title: String,
 ) -> Result<Option<CompressResult>, String> {
     let work = {
@@ -1066,42 +1075,48 @@ async fn compress_document(
     let dest = dest.into_path().map_err(|e| e.to_string())?;
 
     let before = std::fs::metadata(&work).map_err(|e| e.to_string())?.len();
-    let mut images_downsampled = 0u32;
+    let images = target_dpi.map(|dpi| telos_core::doc::ImageCompression {
+        target_dpi: dpi.clamp(50, 600),
+        jpeg_quality: jpeg_quality.unwrap_or(75).clamp(1, 100),
+    });
     let staged = work_dir()?.join(format!("compress-{id}.pdf"));
-    let structural_src = if let Some(dpi) = target_dpi {
-        images_downsampled = renderer()?
-            .downsample_images(&work, dpi.clamp(50, 600), &staged)
-            .map_err(|e| e.to_string())?;
-        staged.clone()
-    } else {
-        work.clone()
-    };
-    telos_core::doc::compact_to(&structural_src, &dest).map_err(|e| e.to_string())?;
-    let _ = std::fs::remove_file(&staged);
+    let mut images_recompressed =
+        telos_core::doc::compress_to(&work, &staged, images).map_err(|e| e.to_string())?;
 
     // Compression is best-effort: if the pipeline grew the file (tiny or
     // already-optimal documents), fall back to a plain copy.
-    let mut after = std::fs::metadata(&dest).map_err(|e| e.to_string())?.len();
-    if after >= before {
-        std::fs::copy(&work, &dest).map_err(|e| e.to_string())?;
+    let mut after = std::fs::metadata(&staged).map_err(|e| e.to_string())?.len();
+    let result = if after < before {
+        std::fs::copy(&staged, &dest)
+    } else {
         after = before;
-        images_downsampled = 0;
-    }
+        images_recompressed = 0;
+        if dest == work {
+            Ok(before)
+        } else {
+            std::fs::copy(&work, &dest)
+        }
+    };
+    let _ = std::fs::remove_file(&staged);
+    result.map_err(|e| e.to_string())?;
     Ok(Some(CompressResult {
         path: dest.to_string_lossy().into_owned(),
         before,
         after,
-        images_downsampled,
+        images_recompressed,
     }))
 }
 
-/// Remove password protection, producing an unlocked working copy. Works
-/// for files opened via the unlock prompt AND owner/permission-password
-/// files (which open without a prompt). The document is shown unlocked and
-/// marked unsaved; the title gains a `_UNLOCKED` suffix and Save As
-/// (Cmd+S) defaults to the original folder.
+/// Remove password protection and save the result as
+/// `Documents/TelosPDF/<name>_UNLOCKED.pdf`, which the tab then continues on.
+/// Works for files opened via the unlock prompt AND owner/permission-password
+/// files (which open without a prompt). The protected original is untouched.
 #[tauri::command]
-async fn remove_password(id: u32, title: String) -> Result<DocumentInfo, String> {
+async fn remove_password(
+    app: tauri::AppHandle,
+    id: u32,
+    title: String,
+) -> Result<DocumentInfo, String> {
     let (work, was_protected, origin) = {
         let reg = REGISTRY.lock().unwrap();
         let entry = reg.docs.get(&id).ok_or("unknown document")?;
@@ -1112,44 +1127,60 @@ async fn remove_password(id: u32, title: String) -> Result<DocumentInfo, String>
         )
     };
 
-    if !was_protected {
-        // Not opened via the unlock flow — check for owner/permission
-        // encryption we can strip with an empty user password.
+    // Opened via the unlock flow: already decrypted in the work copy.
+    // Otherwise check for owner/permission encryption we can strip with an
+    // empty user password.
+    let unlocked = if was_protected {
+        work
+    } else {
         let source = origin.clone().unwrap_or_else(|| work.clone());
         let unlocked = work_dir()?.join(format!("{id}-nopass.pdf"));
         match telos_core::doc::unlock_to(&source, &unlocked, "") {
-            Ok(()) => {
-                let mut reg = REGISTRY.lock().unwrap();
-                let entry = reg.docs.get_mut(&id).ok_or("unknown document")?;
-                entry.push_state(unlocked);
-                entry.saved_pos = None;
-            }
+            Ok(()) => unlocked,
             Err(telos_core::doc::DocError::NotProtected) => {
                 return Err("This document isn't password-protected.".into());
             }
             Err(e) => return Err(e.to_string()),
         }
-    } else {
-        // Already decrypted in the work copy — just mark unsaved.
-        let mut reg = REGISTRY.lock().unwrap();
-        let entry = reg.docs.get_mut(&id).ok_or("unknown document")?;
-        entry.was_protected = false;
-        entry.saved_pos = None;
+    };
+
+    let dir = app
+        .path()
+        .document_dir()
+        .map_err(|e| e.to_string())?
+        .join("TelosPDF");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    let stem = origin
+        .as_deref()
+        .unwrap_or(std::path::Path::new(&title))
+        .file_stem()
+        .map_or_else(|| "document".into(), |s| s.to_string_lossy());
+    let dest = unused_unlocked_path(&dir, &stem);
+    std::fs::copy(&unlocked, &dest)
+        .map_err(|e| format!("could not save to {}: {e}", dest.display()))?;
+    if !was_protected {
+        let _ = std::fs::remove_file(&unlocked);
     }
 
-    // Suggested name: <stem>_UNLOCKED.pdf.
-    let base = title
-        .strip_suffix(".pdf")
-        .or_else(|| title.strip_suffix(".PDF"))
-        .unwrap_or(&title);
-    let unlocked_title = format!("{base}_UNLOCKED.pdf");
-    {
-        let mut reg = REGISTRY.lock().unwrap();
-        if let Some(entry) = reg.docs.get_mut(&id) {
-            entry.save_path = None; // never overwrite the protected original
-        }
+    let name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or(title);
+    adopt_saved_file(id, dest)?;
+    refresh_info(id, &name)
+}
+
+/// `<dir>/<stem>_UNLOCKED.pdf`, numbered if taken, so an earlier unlocked
+/// copy is never overwritten.
+fn unused_unlocked_path(dir: &std::path::Path, stem: &str) -> PathBuf {
+    let mut path = dir.join(format!("{stem}_UNLOCKED.pdf"));
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{stem}_UNLOCKED ({n}).pdf"));
+        n += 1;
     }
-    refresh_info(id, &unlocked_title)
+    path
 }
 
 /// Save (Cmd+S): write directly to the document's file if it has one. Ok(Some)
@@ -1179,6 +1210,27 @@ async fn save_document(id: u32, title: String) -> Result<Option<DocumentInfo>, S
         entry.saved_pos = Some(entry.pos);
     }
     refresh_info(id, &title).map(Some)
+}
+
+/// Make `dest` the document's new baseline; undo history before the save is
+/// released (temp files only).
+fn adopt_saved_file(id: u32, dest: PathBuf) -> Result<(), String> {
+    let work = work_dir()?;
+    let mut reg = REGISTRY.lock().unwrap();
+    let entry = reg.docs.get_mut(&id).ok_or("unknown document")?;
+    for old in entry.history.drain(..) {
+        if old.starts_with(&work) {
+            let _ = std::fs::remove_file(old);
+        }
+    }
+    entry.history = vec![dest.clone()];
+    entry.pos = 0;
+    entry.saved_pos = Some(0);
+    entry.model = Model::NotLoaded;
+    entry.origin = Some(dest.clone());
+    entry.save_path = Some(dest);
+    entry.was_protected = false;
+    Ok(())
 }
 
 /// Save the document's current state to a user-chosen location. The entry
@@ -1219,26 +1271,7 @@ async fn save_document_as(
     };
     let dest = dest.into_path().map_err(|e| e.to_string())?;
     std::fs::copy(&work, &dest).map_err(|e| format!("could not save: {e}"))?;
-
-    {
-        let mut reg = REGISTRY.lock().unwrap();
-        let entry = reg.docs.get_mut(&id).ok_or("unknown document")?;
-        // The saved file becomes the document's new baseline; undo history
-        // before the save is released (temp files only).
-        let work = work_dir()?;
-        for old in entry.history.drain(..) {
-            if old.starts_with(&work) {
-                let _ = std::fs::remove_file(old);
-            }
-        }
-        entry.history = vec![dest.clone()];
-        entry.pos = 0;
-        entry.saved_pos = Some(0);
-        entry.model = Model::NotLoaded;
-        entry.origin = Some(dest.clone());
-        entry.save_path = Some(dest);
-        entry.was_protected = false;
-    }
+    adopt_saved_file(id, dest)?;
     refresh_info(id, &title).map(Some)
 }
 
@@ -3077,7 +3110,18 @@ fn fit_main_window_to_screen(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Windows/Linux start a new process per double-click: fold it into the
+    // running app instead of opening a second window. macOS delivers these
+    // to the running process itself (RunEvent::Opened). Must register first.
+    #[cfg(any(windows, target_os = "linux"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+        for arg in argv.iter().skip(1) {
+            open_external(app, PathBuf::from(&cwd).join(arg));
+        }
+        reveal_main(app);
+    }));
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -3129,7 +3173,7 @@ pub fn run() {
             office_available,
             create_from_office,
             export_office,
-            get_text_segments,
+            get_text_words,
             combine_documents,
             save_document,
             save_document_as,

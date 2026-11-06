@@ -11,6 +11,9 @@ use std::path::{Path, PathBuf};
 
 use lopdf::Document;
 
+mod compress;
+pub use compress::{ImageCompression, compress_to};
+
 #[derive(Debug, thiserror::Error)]
 pub enum DocError {
     #[error("failed to load PDF: {0}")]
@@ -586,17 +589,6 @@ pub fn protect_to(
         }
     }
     doc.save(dest.as_ref())?;
-    Ok(())
-}
-
-/// Structural compression pass: deflate uncompressed streams, drop
-/// unreferenced objects, and save with object/xref streams.
-pub fn compact_to(src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<(), DocError> {
-    let mut doc = Document::load(src.as_ref())?;
-    doc.compress();
-    doc.prune_objects();
-    let mut file = std::fs::File::create(dest.as_ref())?;
-    doc.save_modern(&mut file)?;
     Ok(())
 }
 

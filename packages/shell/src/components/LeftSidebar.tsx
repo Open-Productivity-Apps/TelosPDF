@@ -265,7 +265,7 @@ export default function LeftSidebar() {
             .removePassword(doc.info.id, doc.info.title)
             .then((info) => {
               app.updateInfo(info);
-              app.showToast(t("Password removed — Save As (Cmd+S) writes the unlocked file."));
+              app.showToast(`${t("Password removed — saved to")} ${info.path}`);
             })
             .catch((e) => showToast(String(e)));
         });

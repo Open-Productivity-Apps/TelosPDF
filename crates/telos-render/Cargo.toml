@@ -15,3 +15,4 @@ image.workspace = true
 [dev-dependencies]
 telos-doc.workspace = true
 pdf-writer.workspace = true
+lopdf.workspace = true

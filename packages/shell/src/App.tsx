@@ -3,6 +3,8 @@
 // status bar.
 import { useEffect, useState } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { FileDown } from "lucide-react";
 import LeftSidebar from "./components/LeftSidebar";
 import TabStrip from "./components/TabStrip";
 import Viewer from "./components/Viewer";
@@ -12,7 +14,7 @@ import RightRail from "./components/RightRail";
 import SettingsView from "./components/SettingsView";
 import WelcomeView from "./components/WelcomeView";
 import CompareView from "./components/CompareView";
-import { commands, type DocumentInfo } from "./telos";
+import { commands } from "./telos";
 import { LinkConfirmHost } from "./components/LinkConfirm";
 import { t, useLocale } from "./i18n";
 import { LocaleSwitchPrompt } from "./i18n/LocaleSwitchPrompt";
@@ -21,6 +23,14 @@ import { usePrefs } from "./prefs";
 import { useActiveDoc, useApp } from "./store";
 import { useUpdate } from "./update";
 import { APP_BUILD, APP_VERSION, AUTO_UPDATE_SPLASH } from "./version";
+
+const isPdf = (path: string) => path.toLowerCase().endsWith(".pdf");
+
+/** Open a file handed over by the OS (association, argv or drag and drop). */
+const openFromOs = (path: string) => {
+  const app = useApp.getState();
+  app.openPath(path).catch((e) => app.showToast(String(e)));
+};
 
 export default function App() {
   const doc = useActiveDoc();
@@ -149,14 +159,11 @@ export default function App() {
     }
   };
 
-  // Boot handshake: closes the splash, shows the window, adopts any files
-  // the OS opened us with, and keeps listening for more (file association).
+  // Boot handshake: closes the splash, shows the window, opens any files
+  // the OS launched us with, and keeps listening for more (file association).
   useEffect(() => {
-    const addOpened = useApp.getState().addOpened;
     let unlisten: (() => void) | undefined;
-    void listen<DocumentInfo>("open-file", (e) => addOpened(e.payload)).then(
-      (fn) => (unlisten = fn),
-    );
+    void listen<string>("open-path", (e) => openFromOs(e.payload)).then((fn) => (unlisten = fn));
     // Update check is a named splash step; capped so a slow network can't
     // hold the app hostage. With AUTO_UPDATE_SPLASH a found update also
     // downloads itself right here (retried on failure) — the Update button
@@ -187,7 +194,7 @@ export default function App() {
       return commands.frontendReady();
     })()
       .then((pending) => {
-        pending.forEach(addOpened);
+        pending.forEach(openFromOs);
         // Session restore: reopen last session's files (crash recovery),
         // unless the OS handed us files to open instead.
         const prefs = usePrefs.getState();
@@ -208,6 +215,36 @@ export default function App() {
         .catch(() => {});
     }
     return () => unlisten?.();
+  }, []);
+
+  // PDFs dragged in from the OS: hint over the document area, open on drop.
+  const [dropHint, setDropHint] = useState(false);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void getCurrentWebview()
+      .onDragDropEvent(({ payload }) => {
+        if (payload.type === "enter") {
+          setDropHint(payload.paths.some(isPdf));
+        } else if (payload.type === "leave") {
+          setDropHint(false);
+        } else if (payload.type === "drop") {
+          setDropHint(false);
+          const pdfs = payload.paths.filter(isPdf);
+          pdfs.forEach(openFromOs);
+          if (pdfs.length === 0 && payload.paths.length > 0) {
+            useApp.getState().showToast(t("Only PDF files can be opened."));
+          }
+        }
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   const answerDefaultPrompt = (makeDefault: boolean) => {
@@ -358,6 +395,13 @@ export default function App() {
           )}
         </span>
       </footer>
+
+      {dropHint && (
+        <div className="drop-overlay">
+          <FileDown size={40} strokeWidth={1.5} />
+          <span>{t("Drag and drop to open")}</span>
+        </div>
+      )}
 
       {toast && !ocrProgress && <div className="toast">{toast}</div>}
 

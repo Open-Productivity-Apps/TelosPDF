@@ -39,10 +39,13 @@ export interface AnnotationEntry {
 /** lopdf object id, serialized as [number, generation]. */
 export type CommentId = [number, number];
 
-export interface TextSegmentEntry {
-  /** [x, y, width, height] in PDF points, origin bottom-left. */
+export interface TextWordEntry {
+  /** [x, y, width, height] in PDF points, origin bottom-left. `y` and
+   *  `height` span the whole line. */
   bounds: [number, number, number, number];
   text: string;
+  /** Which line of the page the word sits on. */
+  line: number;
 }
 
 export interface PageObjectEntry {
@@ -175,8 +178,8 @@ export const commands = {
       "compare_documents",
       { id },
     ),
-  getTextSegments: (id: number, pageIndex: number) =>
-    invoke<TextSegmentEntry[]>("get_text_segments", { id, pageIndex }),
+  getTextWords: (id: number, pageIndex: number) =>
+    invoke<TextWordEntry[]>("get_text_words", { id, pageIndex }),
   /** Pick 2+ PDFs and merge them. Null if cancelled. */
   combineDocuments: () => invoke<DocumentInfo | null>("combine_documents"),
   closeDocument: (id: number) => invoke<void>("close_document", { id }),
@@ -194,7 +197,7 @@ export const commands = {
     invoke<DocumentInfo | null>("save_document_as", { id, title }),
   /** Boot handshake: closes splash, shows the window, returns any files
    * the OS asked us to open before the UI was ready. */
-  frontendReady: () => invoke<DocumentInfo[]>("frontend_ready"),
+  frontendReady: () => invoke<string[]>("frontend_ready"),
   isDefaultPdfHandler: () => invoke<boolean>("is_default_pdf_handler"),
   undo: (id: number, title: string) => invoke<DocumentInfo>("undo", { id, title }),
   redo: (id: number, title: string) => invoke<DocumentInfo>("redo", { id, title }),
@@ -273,10 +276,15 @@ export const commands = {
   removePassword: (id: number, title: string) =>
     invoke<DocumentInfo>("remove_password", { id, title }),
   /** Compressed copy via Save As. targetDpi null = lossless/structural. */
-  compressDocument: (id: number, targetDpi: number | null, title: string) =>
-    invoke<{ path: string; before: number; after: number; imagesDownsampled: number } | null>(
+  compressDocument: (
+    id: number,
+    targetDpi: number | null,
+    jpegQuality: number | null,
+    title: string,
+  ) =>
+    invoke<{ path: string; before: number; after: number; imagesRecompressed: number } | null>(
       "compress_document",
-      { id, targetDpi, title },
+      { id, targetDpi, jpegQuality, title },
     ),
   searchDocument: (id: number, query: string, matchCase: boolean) =>
     invoke<SearchHitEntry[]>("search_document", { id, query, matchCase }),

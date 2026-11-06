@@ -8,20 +8,23 @@ const PRESETS = [
   {
     id: "lossless",
     dpi: null,
+    quality: null,
     title: "Lossless",
     hint: "Recompress streams & drop unused objects. Pixel-identical.",
   },
   {
     id: "balanced",
     dpi: 150,
+    quality: 72,
     title: "Balanced",
-    hint: "Downsample images to 150 DPI. Great for sharing & email.",
+    hint: "Downsample images to 150 DPI and re-encode them. Great for sharing & email.",
   },
   {
     id: "small",
     dpi: 100,
+    quality: 55,
     title: "Smallest",
-    hint: "Downsample images to 100 DPI. Screen reading only.",
+    hint: "Downsample images to 100 DPI at lower quality. Screen reading only.",
   },
 ] as const;
 
@@ -45,7 +48,12 @@ export default function CompressModal({
     const chosen = PRESETS.find((p) => p.id === preset)!;
     setBusy(true);
     try {
-      const result = await commands.compressDocument(doc.info.id, chosen.dpi, doc.info.title);
+      const result = await commands.compressDocument(
+        doc.info.id,
+        chosen.dpi,
+        chosen.quality,
+        doc.info.title,
+      );
       onClose();
       if (result) {
         const saved = result.before - result.after;

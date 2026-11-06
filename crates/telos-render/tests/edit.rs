@@ -2,8 +2,16 @@
 //! delete objects — through the same PDFium ops the app uses.
 //! Requires `cargo xtask fetch-pdfium`.
 
+use std::sync::OnceLock;
+
 use pdf_writer::{Content, Finish, Pdf, Rect, Ref};
 use telos_render::Renderer;
+
+/// PDFium binds once per process, so tests in this binary share it.
+fn renderer() -> &'static Renderer {
+    static RENDERER: OnceLock<Renderer> = OnceLock::new();
+    RENDERER.get_or_init(|| Renderer::new().expect("run `cargo xtask fetch-pdfium` first"))
+}
 
 fn fixture_pdf() -> Vec<u8> {
     let catalog_id = Ref::new(1);
@@ -39,7 +47,7 @@ fn edit_pipeline_add_edit_delete() {
     let v0 = dir.join("v0.pdf");
     std::fs::write(&v0, fixture_pdf()).unwrap();
 
-    let renderer = Renderer::new().expect("run `cargo xtask fetch-pdfium` first");
+    let renderer = renderer();
 
     // Fixture has exactly one path object.
     let objects = renderer.page_objects(&v0, 0).unwrap();
@@ -78,4 +86,36 @@ fn edit_pipeline_add_edit_delete() {
     // The final document still renders.
     let png = renderer.render_page_png(&v3, 0, 400, 0).unwrap();
     assert!(png.len() > 100);
+}
+
+#[test]
+fn text_words_are_positioned_and_grouped_by_line() {
+    let dir = std::env::temp_dir().join("telos-render-words");
+    std::fs::create_dir_all(&dir).unwrap();
+    let v0 = dir.join("v0.pdf");
+    let v1 = dir.join("v1.pdf");
+    let v2 = dir.join("v2.pdf");
+    std::fs::write(&v0, fixture_pdf()).unwrap();
+    let renderer = renderer();
+    renderer
+        .add_text_object(&v0, 0, 72.0, 700.0, "Hello TelosPDF", 14.0, &v1)
+        .unwrap();
+    renderer
+        .add_text_object(&v1, 0, 72.0, 660.0, "Second", 14.0, &v2)
+        .unwrap();
+
+    let words = renderer.text_words(&v2, 0).unwrap();
+
+    let summary: Vec<_> = words.iter().map(|w| (w.text.as_str(), w.line)).collect();
+    assert_eq!(summary, [("Hello", 0), ("TelosPDF", 0), ("Second", 1)]);
+    let [hello, telos, second] = words.as_slice() else {
+        unreachable!()
+    };
+    assert!(hello.bounds.0 + hello.bounds.2 <= telos.bounds.0 + 0.5);
+    assert_eq!(
+        hello.bounds.1, telos.bounds.1,
+        "line shares one baseline box"
+    );
+    assert_eq!(hello.bounds.3, telos.bounds.3, "line shares one height");
+    assert!(second.bounds.1 < hello.bounds.1);
 }

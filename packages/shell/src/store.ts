@@ -87,6 +87,8 @@ interface AppState {
   selectedComment: string | null;
   /** Path awaiting a password (unlock modal). */
   unlockRequest: string | null;
+  /** Protected files waiting their turn behind unlockRequest. */
+  unlockQueue: string[];
   /** Long operation in flight (loading overlay), e.g. "Opening…". */
   busy: string | null;
   /** Print jobs sent this session (newest first). */
@@ -173,6 +175,7 @@ interface AppState {
   setSelectedComment: (key: string | null) => void;
   undo: () => Promise<void>;
   redo: () => Promise<void>;
+  requestUnlock: (path: string) => void;
   cancelUnlock: () => void;
   unlock: (password: string) => Promise<void>;
   openSearch: () => void;
@@ -184,6 +187,12 @@ interface AppState {
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.8, 1, 1.25, 1.5, 2, 3, 4, 6, 8];
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Move on to the next protected file waiting for a password, if any. */
+const nextUnlock = (s: AppState) => ({
+  unlockRequest: s.unlockQueue[0] ?? null,
+  unlockQueue: s.unlockQueue.slice(1),
+});
 
 export const useApp = create<AppState>((set, get) => ({
   docs: [],
@@ -211,6 +220,7 @@ export const useApp = create<AppState>((set, get) => ({
   focusedComment: null,
   selectedComment: null,
   unlockRequest: null,
+  unlockQueue: [],
   busy: null,
   compareTabs: [],
   activeCompare: null,
@@ -228,7 +238,7 @@ export const useApp = create<AppState>((set, get) => ({
       set({ busy: null });
       const msg = String(e);
       if (msg.includes("PASSWORD_REQUIRED:")) {
-        set({ unlockRequest: msg.split("PASSWORD_REQUIRED:")[1] });
+        get().requestUnlock(msg.split("PASSWORD_REQUIRED:")[1]);
         return;
       }
       throw e;
@@ -247,26 +257,26 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   openPath: async (path) => {
+    // Same path already open → just focus it.
+    const existing = get().docs.find((d) => d.info.path === path);
+    if (existing) {
+      set({ activeId: existing.info.id, settingsActive: false, welcomeActive: false });
+      return;
+    }
     let info;
     try {
       set({ busy: "Opening…" });
       info = await commands.openDocumentPath(path);
     } catch (e) {
       if (String(e).includes("PASSWORD_REQUIRED:")) {
-        set({ unlockRequest: path });
+        get().requestUnlock(path);
         return;
       }
       throw e;
     } finally {
       set({ busy: null });
     }
-    usePrefs.getState().addRecent({ title: info.title, path: info.path });
-    set((s) => ({
-      docs: [...s.docs, { info, viewRotation: 0, currentPage: 0, pageRevs: new Array(info.pages).fill(info.rev) }],
-      activeId: info.id,
-      settingsActive: false,
-      welcomeActive: false,
-    }));
+    get().addOpened(info);
   },
 
   createNew: async () => {
@@ -570,7 +580,13 @@ export const useApp = create<AppState>((set, get) => ({
 
   clearFocusedComment: () => set({ focusedComment: null }),
 
-  cancelUnlock: () => set({ unlockRequest: null }),
+  requestUnlock: (path) =>
+    set((s) => {
+      if (path === s.unlockRequest || s.unlockQueue.includes(path)) return s;
+      return s.unlockRequest ? { unlockQueue: [...s.unlockQueue, path] } : { unlockRequest: path };
+    }),
+
+  cancelUnlock: () => set(nextUnlock),
 
   unlock: async (password) => {
     const path = get().unlockRequest;
@@ -584,7 +600,7 @@ export const useApp = create<AppState>((set, get) => ({
     }
     // Remember the ORIGINAL protected file, not the temp work copy.
     usePrefs.getState().addRecent({ title: info.title, path });
-    set({ unlockRequest: null });
+    set(nextUnlock);
     get().addOpened(info);
   },
 

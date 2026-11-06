@@ -380,6 +380,7 @@ body,
 /* ── Main column ─────────────────────────────────────────── */
 .main {
   grid-row: 1;
+  grid-column: 2;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1630,16 +1631,21 @@ body,
 }
 
 /* ── Text layer (selection & copy) ───────────────────────── */
+/* The highlight's transparency lives here rather than on ::selection:
+   neighbouring words' highlights overlap, and per-word alpha would darken
+   every overlap. The layer's text is transparent, so nothing else fades. */
 .text-layer {
   position: absolute;
   inset: 0;
   overflow: hidden;
   line-height: 1;
   cursor: text;
+  opacity: 0.4;
 }
 
 .text-layer span {
   position: absolute;
+  z-index: 1;
   color: transparent;
   white-space: pre;
   transform-origin: 0 0;
@@ -1648,7 +1654,51 @@ body,
 }
 
 .text-layer span::selection {
-  background: rgba(76, 141, 246, 0.4);
+  background: rgb(76, 141, 246);
+}
+
+/* Line breaks only feed copied text; they must never paint a highlight. */
+.text-layer br {
+  user-select: text;
+}
+
+.text-layer br::selection {
+  background: transparent;
+}
+
+/* Catches the pointer over blank space mid-drag (see TextLayer.tsx). */
+.text-layer .end-of-content {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  user-select: none;
+}
+
+.text-layer.selecting .end-of-content {
+  top: 0;
+  user-select: text;
+}
+
+/* File dragged in from the OS. Shares .main's grid cell, so it covers the
+   document area but never the side panes or status bar. */
+.drop-overlay {
+  grid-row: 1;
+  grid-column: 2;
+  z-index: 35;
+  margin: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 2px dashed var(--focusBorder);
+  border-radius: 10px;
+  background: var(--viewer-canvasBackground);
+  color: var(--focusBorder);
+  font-size: 15px;
+  font-weight: 600;
+  opacity: 0.94;
+  pointer-events: none;
 }
 
 .modal-body-text {

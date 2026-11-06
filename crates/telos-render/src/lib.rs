@@ -56,15 +56,19 @@ fn candidate_lib_dirs() -> Vec<PathBuf> {
     if let Ok(dir) = std::env::var("TELOS_PDFIUM_PATH") {
         dirs.push(PathBuf::from(dir));
     }
-    // Walk up from this crate (dev/test) and from the current exe (packaged)
-    // looking for the workspace-level .pdfium directory.
-    let mut roots = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))];
+    // Walk up from the current exe (packaged, and target/ in dev/test) looking
+    // for the .pdfium directory. The exe comes first so an installed app always
+    // loads its bundled copy: this crate's compile-time path can still exist on
+    // the machine that built it, and under ~/Documents loading from it blocks
+    // on a macOS permission prompt.
+    let mut roots = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         roots.push(exe);
     }
     if let Ok(cwd) = std::env::current_dir() {
         roots.push(cwd);
     }
+    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
     for root in roots {
         let mut cur: Option<&std::path::Path> = Some(root.as_path());
         while let Some(dir) = cur {
@@ -104,6 +108,83 @@ pub struct TextSegmentInfo {
     /// (x, y, width, height) in PDF points, origin bottom-left.
     pub bounds: (f32, f32, f32, f32),
     pub text: String,
+}
+
+/// One word for the selectable text layer.
+#[derive(Debug, Clone)]
+pub struct TextWordInfo {
+    /// (x, y, width, height) in PDF points, origin bottom-left. `y` and
+    /// `height` span the whole line, so highlights along a line stay level.
+    pub bounds: (f32, f32, f32, f32),
+    pub text: String,
+    /// Which line of the page this word sits on.
+    pub line: u32,
+}
+
+/// One positioned character of page text.
+struct Glyph {
+    ch: char,
+    left: f32,
+    right: f32,
+    bottom: f32,
+    top: f32,
+}
+
+/// Group page characters, in reading order, into words and lines. `None`
+/// marks a word break (whitespace).
+fn group_words(glyphs: impl IntoIterator<Item = Option<Glyph>>) -> Vec<TextWordInfo> {
+    let mut words: Vec<TextWordInfo> = Vec::new();
+    // (bottom, top) of each line so far.
+    let mut lines: Vec<(f32, f32)> = Vec::new();
+    let mut word_open = false;
+    for glyph in glyphs {
+        let Some(glyph) = glyph else {
+            word_open = false;
+            continue;
+        };
+        let height = glyph.top - glyph.bottom;
+        match lines.last_mut() {
+            Some((bottom, top))
+                if top.min(glyph.top) - bottom.max(glyph.bottom)
+                    >= 0.5 * height.min(*top - *bottom) =>
+            {
+                *bottom = bottom.min(glyph.bottom);
+                *top = top.max(glyph.top);
+            }
+            _ => {
+                lines.push((glyph.bottom, glyph.top));
+                word_open = false;
+            }
+        }
+        // Text positioned apart is two words even without a space character
+        // (common in tables). Measured on both sides for right-to-left runs.
+        if let Some(word) = words.last().filter(|_| word_open) {
+            let (left, right) = (word.bounds.0, word.bounds.0 + word.bounds.2);
+            word_open = (glyph.left - right).max(left - glyph.right) <= 0.25 * height;
+        }
+        match words.last_mut().filter(|_| word_open) {
+            Some(word) => {
+                let right = (word.bounds.0 + word.bounds.2).max(glyph.right);
+                word.bounds.0 = word.bounds.0.min(glyph.left);
+                word.bounds.2 = right - word.bounds.0;
+                word.text.push(glyph.ch);
+            }
+            None => {
+                words.push(TextWordInfo {
+                    bounds: (glyph.left, 0.0, glyph.right - glyph.left, 0.0),
+                    text: glyph.ch.to_string(),
+                    line: lines.len() as u32 - 1,
+                });
+                word_open = true;
+            }
+        }
+    }
+    for word in &mut words {
+        let (bottom, top) = lines[word.line as usize];
+        word.bounds.1 = bottom;
+        word.bounds.3 = top - bottom;
+    }
+    words
 }
 
 /// One interactive form field (Fill & Sign overlay).
@@ -578,6 +659,41 @@ impl Renderer {
         })
     }
 
+    /// Page text as positioned words, for the viewer's selection layer.
+    pub fn text_words(
+        &self,
+        pdf_path: &std::path::Path,
+        page_index: u32,
+    ) -> Result<Vec<TextWordInfo>, RenderError> {
+        let _guard = self.lock();
+        self.with_doc(pdf_path, |doc| {
+            let page = doc.pages().get(page_index.min(i32::MAX as u32) as i32)?;
+            let text = page.text()?;
+            let chars = text.chars();
+            Ok(group_words(chars.iter().map(|c| {
+                // PDFium reports a line-end hyphen with a private code point.
+                let ch = if c.is_hyphen().unwrap_or(false) {
+                    '-'
+                } else {
+                    c.unicode_char()?
+                };
+                let generated = ch != '-' && c.is_generated().unwrap_or(false);
+                if generated || ch.is_whitespace() || ch.is_control() {
+                    return None;
+                }
+                let bounds = c.loose_bounds().ok()?;
+                let (bottom, top) = (bounds.bottom().value, bounds.top().value);
+                (top > bottom).then(|| Glyph {
+                    ch,
+                    left: bounds.left().value,
+                    right: bounds.right().value,
+                    bottom,
+                    top,
+                })
+            })))
+        })
+    }
+
     /// Search the whole document. Case-insensitive unless `match_case`;
     /// capped at 2000 hits to bound worst-case documents.
     pub fn search(
@@ -669,62 +785,6 @@ impl Renderer {
         doc.save_to_file(dest)?;
         self.evict(src);
         Ok(())
-    }
-
-    /// Downsample oversized images in place (PDFium pass of Compress).
-    /// Images whose pixel density exceeds `target_dpi` for their displayed
-    /// size are resized. Returns how many images were downsampled.
-    pub fn downsample_images(
-        &self,
-        src: &std::path::Path,
-        target_dpi: u32,
-        dest: &std::path::Path,
-    ) -> Result<u32, RenderError> {
-        let _guard = self.lock();
-        let doc = self.pdfium.load_pdf_from_file(src, None)?;
-        let mut changed = 0u32;
-        for mut page in doc.pages().iter() {
-            let mut any = false;
-            let objects = page.objects_mut();
-            for index in 0..objects.len() {
-                let Ok(mut object) = objects.get(index) else {
-                    continue;
-                };
-                let PdfPageObject::Image(image_object) = &mut object else {
-                    continue;
-                };
-                let Ok(bounds) = image_object.bounds() else {
-                    continue;
-                };
-                // Displayed size in points → pixel budget at target DPI.
-                let width_pt = bounds.right().value - bounds.left().value;
-                let height_pt = bounds.top().value - bounds.bottom().value;
-                if width_pt <= 1.0 || height_pt <= 1.0 {
-                    continue;
-                }
-                let budget_w = (width_pt / 72.0 * target_dpi as f32).ceil() as u32;
-                let budget_h = (height_pt / 72.0 * target_dpi as f32).ceil() as u32;
-                let Ok(raw) = image_object.get_raw_image() else {
-                    continue;
-                };
-                // Only shrink when clearly oversized (30% headroom avoids
-                // requality churn for marginal wins).
-                if raw.width() * 10 <= budget_w * 13 || raw.height() * 10 <= budget_h * 13 {
-                    continue;
-                }
-                let resized = raw.thumbnail(budget_w.max(1), budget_h.max(1));
-                if image_object.set_image(&resized).is_ok() {
-                    changed += 1;
-                    any = true;
-                }
-            }
-            if any {
-                page.regenerate_content()?;
-            }
-        }
-        doc.save_to_file(dest)?;
-        self.evict(src);
-        Ok(changed)
     }
 
     /// Form fields on one page (Fill & Sign overlay).
@@ -1384,5 +1444,83 @@ impl Renderer {
                 .map(|r| (r.width().value, r.height().value))
                 .collect())
         })
+    }
+}
+
+#[cfg(test)]
+mod word_tests {
+    use super::{Glyph, group_words};
+
+    /// `text` set left to right from `left`, one 6pt cell per character;
+    /// spaces come through as word breaks.
+    fn run(text: &str, left: f32, bottom: f32) -> Vec<Option<Glyph>> {
+        text.chars()
+            .enumerate()
+            .map(|(i, ch)| {
+                let left = left + i as f32 * 6.0;
+                (ch != ' ').then_some(Glyph {
+                    ch,
+                    left,
+                    right: left + 6.0,
+                    bottom,
+                    top: bottom + 12.0,
+                })
+            })
+            .collect()
+    }
+
+    fn texts(words: &[super::TextWordInfo]) -> Vec<(&str, u32)> {
+        words.iter().map(|w| (w.text.as_str(), w.line)).collect()
+    }
+
+    #[test]
+    fn splits_words_on_spaces_and_lines_on_height() {
+        let mut glyphs = run("one two", 10.0, 700.0);
+        glyphs.extend(run("three", 10.0, 680.0));
+        let words = group_words(glyphs);
+        assert_eq!(texts(&words), [("one", 0), ("two", 0), ("three", 1)]);
+        assert_eq!(words[1].bounds, (34.0, 700.0, 18.0, 12.0));
+    }
+
+    #[test]
+    fn splits_columns_that_have_no_space_between_them() {
+        let mut glyphs = run("left", 10.0, 700.0);
+        glyphs.extend(run("right", 200.0, 700.0));
+        assert_eq!(texts(&group_words(glyphs)), [("left", 0), ("right", 0)]);
+    }
+
+    #[test]
+    fn superscript_stays_on_its_line_and_levels_the_highlight() {
+        let mut glyphs = run("area", 10.0, 700.0);
+        glyphs.push(Some(Glyph {
+            ch: '2',
+            left: 34.0,
+            right: 38.0,
+            bottom: 706.0,
+            top: 714.0,
+        }));
+        glyphs.extend(run(" next", 38.0, 700.0));
+        let words = group_words(glyphs);
+        assert_eq!(texts(&words), [("area2", 0), ("next", 0)]);
+        assert_eq!(words[1].bounds.1, 700.0);
+        assert_eq!(words[1].bounds.3, 14.0);
+    }
+
+    #[test]
+    fn right_to_left_runs_stay_one_word() {
+        let glyphs = (0..4).map(|i| {
+            let right = 100.0 - i as f32 * 6.0;
+            Some(Glyph {
+                ch: 'א',
+                left: right - 6.0,
+                right,
+                bottom: 700.0,
+                top: 712.0,
+            })
+        });
+        let words = group_words(glyphs);
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].bounds.0, 76.0);
+        assert_eq!(words[0].bounds.2, 24.0);
     }
 }

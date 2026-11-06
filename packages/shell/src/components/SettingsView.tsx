@@ -595,6 +595,14 @@ const ENGINES: Engine[] = [
 
 /** What shipped in the running version — shown under About → TelosPDF. */
 const CHANGELOG: string[] = [
+  "Double-clicking a PDF now always opens it: password-protected files ask for their password, and .PDF names in capitals work.",
+  "On Windows and Linux, opening another PDF joins the running app instead of starting a second window.",
+  "Drag PDFs onto the window to open them. A \"Drag and drop to open\" hint shows over the document area.",
+  "Compress PDF now shrinks photos and scans. It used to leave these files unchanged.",
+  "Compressed images keep their transparency.",
+  "Remove password now saves the unlocked PDF straight to Documents/TelosPDF.",
+  "Text selection is steadier: highlights follow the words and stay level, dragging across blank space no longer jumps, and a triple-click selects the line.",
+  "Copied text keeps its spaces and line breaks, and pastes as plain text.",
   "Windows now installs just for you — no administrator prompt, and updates apply without the installer reappearing.",
   "The window no longer opens taller than the screen, so it can't hide behind the Windows taskbar.",
   "About has a Check for updates button, which rests for six hours once it confirms you're up to date.",
