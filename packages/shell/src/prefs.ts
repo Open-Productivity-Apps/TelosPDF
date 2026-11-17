@@ -40,6 +40,8 @@ interface PrefsState {
   theme: ThemePref;
   /** Pure-black dark surfaces (OLED); applies whenever dark is active. */
   oledDark: boolean;
+  /** Draw PDF pages in the theme too (dark, or black with OLED). */
+  themedPages: boolean;
   /** Remembered left-rail collapsed state (persists across restarts). */
   sidebarCollapsed: boolean;
   /** Remembered right-panel width in px. */
@@ -62,6 +64,7 @@ interface PrefsState {
   setAppRegion: (p: Partial<AppRegion>) => void;
   setRegionAutoFrom: (code: string) => void;
   setTheme: (theme: ThemePref) => void;
+  setThemedPages: (on: boolean) => void;
   setOledDark: (on: boolean) => void;
   setSidebarCollapsed: (v: boolean) => void;
   setRightPanelWidth: (w: number) => void;
@@ -89,6 +92,7 @@ export const usePrefs = create<PrefsState>()(
       regionAutoFrom: "",
       theme: "system",
       oledDark: false,
+      themedPages: false,
       sidebarCollapsed: false,
       rightPanelWidth: 300,
       myEditCode: "",
@@ -108,6 +112,7 @@ export const usePrefs = create<PrefsState>()(
       setRegionAutoFrom: (regionAutoFrom) => set({ regionAutoFrom }),
       setTheme: (theme) => set({ theme }),
       setOledDark: (oledDark) => set({ oledDark }),
+      setThemedPages: (themedPages) => set({ themedPages }),
       setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
       setRightPanelWidth: (rightPanelWidth) => set({ rightPanelWidth }),
       setMyEditCode: (myEditCode) => set({ myEditCode }),

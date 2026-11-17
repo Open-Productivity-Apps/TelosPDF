@@ -2,7 +2,13 @@
 // (telos.ts) are the only thing that talks to the host.
 import { create } from "zustand";
 import { usePrefs } from "./prefs";
-import { commands, type DocumentInfo, type SearchHitEntry } from "./telos";
+import {
+  commands,
+  type DocumentInfo,
+  type PrintJobEntry,
+  type PrintJobState,
+  type SearchHitEntry,
+} from "./telos";
 import type { RedactRect } from "./components/RedactLayer";
 
 export type RightPanelId = "comments" | "bookmarks" | "pages" | "signatures" | null;
@@ -91,9 +97,21 @@ interface AppState {
   unlockQueue: string[];
   /** Long operation in flight (loading overlay), e.g. "Opening…". */
   busy: string | null;
-  /** Print jobs sent this session (newest first). */
-  printJobs: { id: number; title: string; printer: string; copies: number; at: string }[];
-  addPrintJob: (job: { title: string; printer: string; copies: number }) => void;
+  /** Print jobs sent this session (newest first), followed until they end. */
+  printJobs: TrackedPrint[];
+  /** Everything on the system spooler at the last check. */
+  printQueue: PrintJobEntry[];
+  /** Open queue views; the monitor also runs while any job is unfinished. */
+  printWatchers: number;
+  startPrint: (job: { title: string; printer: string | null; expected: number }) => number;
+  printSent: (key: number, sent: { jobId: string | null; printer: string | null }) => void;
+  printFailed: (key: number, message: string) => void;
+  /** Keep the queue fresh while a view is open; returns the stop function. */
+  watchPrintQueue: () => () => void;
+  applyPrintQueue: (queue: PrintJobEntry[]) => void;
+  /** Bumped to run a sidebar tool from elsewhere (keyboard shortcuts). */
+  toolRequest: { id: string; nonce: number } | null;
+  requestTool: (id: string) => void;
   /** Open visual-compare tabs. */
   compareTabs: CompareTab[];
   /** Active compare tab id when a compare tab is focused, else null. */
@@ -188,6 +206,48 @@ const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.8, 1, 1.25, 1.5, 2, 3, 4, 6, 8];
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
+/** A print job this app sent, followed until it ends. */
+export interface TrackedPrint {
+  key: number;
+  title: string;
+  printer: string | null;
+  /** Spooler id once known. */
+  jobId: string | null;
+  sentAt: number;
+  /** Sheets expected (selected pages × copies), for the progress bar. */
+  expected: number;
+  /** "sending": handing it to the spooler; "sent": accepted, not listed yet. */
+  state: "sending" | "sent" | PrintJobState;
+  message: string;
+  pagesDone: number | null;
+}
+
+export const PRINT_ENDED = new Set<TrackedPrint["state"]>(["done", "cancelled", "failed"]);
+const PRINT_POLL_MS = 1500;
+let printPoll: ReturnType<typeof setTimeout> | null = null;
+let printPolling = false;
+
+/** Check the spooler now; keeps checking while a job is unfinished or a
+ *  queue view is open. */
+export async function pollPrintQueue() {
+  if (printPolling) return;
+  if (printPoll) clearTimeout(printPoll);
+  printPoll = null;
+  const s = useApp.getState();
+  const active = s.printJobs.filter((j) => !PRINT_ENDED.has(j.state));
+  if (active.length === 0 && s.printWatchers === 0) return;
+  printPolling = true;
+  try {
+    const queue = await commands.printQueue(active.flatMap((j) => (j.jobId ? [j.jobId] : [])));
+    useApp.getState().applyPrintQueue(queue);
+  } catch {
+    // Spooler unreachable this round; try again on the next tick.
+  } finally {
+    printPolling = false;
+  }
+  printPoll = setTimeout(() => void pollPrintQueue(), PRINT_POLL_MS);
+}
+
 /** Move on to the next protected file waiting for a password, if any. */
 const nextUnlock = (s: AppState) => ({
   unlockRequest: s.unlockQueue[0] ?? null,
@@ -225,6 +285,9 @@ export const useApp = create<AppState>((set, get) => ({
   compareTabs: [],
   activeCompare: null,
   printJobs: [],
+  printQueue: [],
+  printWatchers: 0,
+  toolRequest: null,
   searchOpen: false,
   searchHits: [],
   searchCurrent: 0,
@@ -683,13 +746,97 @@ export const useApp = create<AppState>((set, get) => ({
   setActiveCompare: (id) =>
     set({ activeCompare: id, activeId: null, welcomeActive: false, settingsActive: false }),
 
-  addPrintJob: (job) =>
+  startPrint: (job) => {
+    const key = (get().printJobs[0]?.key ?? 0) + 1;
     set((s) => ({
       printJobs: [
-        { ...job, id: (s.printJobs[0]?.id ?? 0) + 1, at: new Date().toLocaleTimeString() },
+        { ...job, key, jobId: null, sentAt: Date.now(), state: "sending" as const, message: "", pagesDone: null },
         ...s.printJobs,
-      ].slice(0, 50),
+      ].slice(0, 30),
+    }));
+    return key;
+  },
+
+  printSent: (key, sent) => {
+    set((s) => ({
+      printJobs: s.printJobs.map((j) =>
+        j.key === key
+          ? { ...j, jobId: sent.jobId, printer: sent.printer ?? j.printer, state: "sent" as const }
+          : j,
+      ),
+    }));
+    void pollPrintQueue();
+  },
+
+  printFailed: (key, message) =>
+    set((s) => ({
+      printJobs: s.printJobs.map((j) =>
+        j.key === key ? { ...j, state: "failed" as const, message } : j,
+      ),
     })),
+
+  watchPrintQueue: () => {
+    set((s) => ({ printWatchers: s.printWatchers + 1 }));
+    void pollPrintQueue();
+    return () => set((s) => ({ printWatchers: Math.max(0, s.printWatchers - 1) }));
+  },
+
+  applyPrintQueue: (queue) => {
+    const ended: TrackedPrint[] = [];
+    const claimed = new Set(get().printJobs.flatMap((j) => (j.jobId ? [j.jobId] : [])));
+    const printJobs = get().printJobs.map((job) => {
+      if (job.state === "sending" || PRINT_ENDED.has(job.state)) return job;
+      let jobId = job.jobId;
+      // No id from the spooler (Windows shell print): adopt the first new
+      // job that shows up on that printer after we sent it.
+      if (!jobId) {
+        const found = queue.find(
+          (e) =>
+            !claimed.has(e.id) &&
+            (!job.printer || e.printer === job.printer) &&
+            (e.submittedMs ?? 0) >= job.sentAt - 5000,
+        );
+        if (found) {
+          jobId = found.id;
+          claimed.add(found.id);
+        }
+      }
+      const entry = jobId ? queue.find((e) => e.id === jobId) : undefined;
+      let next: TrackedPrint;
+      if (entry) {
+        next = { ...job, jobId, state: entry.state, message: entry.message, pagesDone: entry.pagesDone };
+      } else if (jobId) {
+        // Gone from the spooler with no record of how it ended: spoolers
+        // drop finished jobs, so treat it as printed.
+        next = { ...job, jobId, state: "done", message: "" };
+      } else if (Date.now() - job.sentAt > 60_000) {
+        next = {
+          ...job,
+          state: "done",
+          message: "Sent, but no print queue listed it, so it couldn't be followed.",
+        };
+      } else {
+        return job;
+      }
+      if (PRINT_ENDED.has(next.state)) ended.push(next);
+      return next;
+    });
+    set({ printJobs, printQueue: queue });
+    // Tell the user how each job ended, even with the queue view closed.
+    for (const job of ended) {
+      const outcome =
+        job.state === "done"
+          ? job.jobId
+            ? `Printed “${job.title}”.`
+            : `Sent “${job.title}” to the printer.`
+          : job.state === "cancelled"
+            ? `Print cancelled: “${job.title}”.`
+            : `Print failed: “${job.title}”${job.message ? ` — ${job.message}` : "."}`;
+      get().showToast(outcome);
+    }
+  },
+
+  requestTool: (id) => set((s) => ({ toolRequest: { id, nonce: (s.toolRequest?.nonce ?? 0) + 1 } })),
 
   showToast: (message) => {
     clearTimeout(toastTimer);

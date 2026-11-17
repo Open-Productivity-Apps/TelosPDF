@@ -33,7 +33,7 @@ const SECTIONS: { id: SectionId; title: string; hint: string; keywords: string }
   { id: "region", title: "Region and language", hint: "Locale, translations & formats", keywords: "region language locale translate translation currency date time clock units metric imperial flag country" },
   { id: "ocr", title: "OCR", hint: "Text recognition engine", keywords: "ocr scan tesseract unlimited baidu model ai text recognition engine download" },
   { id: "translate", title: "Translate", hint: "Local model & Google API key", keywords: "translate translation google cloud api key qwen local model language" },
-  { id: "accessibility", title: "Accessibility", hint: "Theme, motion & text", keywords: "theme dark light oled system motion animation text size contrast" },
+  { id: "accessibility", title: "Accessibility", hint: "Theme, motion & text", keywords: "theme dark light oled system pages invert night motion animation text size contrast" },
   { id: "about", title: "About", hint: "Version, engines & licenses", keywords: "version engine pdfium license credits" },
 ];
 
@@ -551,6 +551,12 @@ function AccessibilitySection() {
         <Toggle on={prefs.oledDark} onChange={prefs.setOledDark} />
       </Row>
       <Row
+        title="Pages follow the theme"
+        description="Shows PDF pages dark in the dark theme, and black in OLED mode. Light and System follow along. Printing and saved files are unchanged."
+      >
+        <Toggle on={prefs.themedPages} onChange={prefs.setThemedPages} />
+      </Row>
+      <Row
         title="Reduce motion"
         description="Turns off sidebar and panel animations."
       >
@@ -595,6 +601,12 @@ const ENGINES: Engine[] = [
 
 /** What shipped in the running version — shown under About → TelosPDF. */
 const CHANGELOG: string[] = [
+  "Cmd+P (Ctrl+P on Windows and Linux) opens Print.",
+  "After you print, the queue shows each job live with a progress bar: sending, waiting, printing page by page, then printed, cancelled or failed. A notification tells you when it finishes.",
+  "Sending a print job also opens your system's print queue (Print Center on macOS, the printer queue on Windows).",
+  "New Accessibility setting: \"Pages follow the theme\" shows PDF pages dark in the dark and OLED themes. Printing and saved files are unchanged.",
+  "Settings rows keep their buttons on the same line instead of wrapping below the text.",
+  "With no default printer set, the printer list no longer shows a bogus printer name.",
   "Double-clicking a PDF now always opens it: password-protected files ask for their password, and .PDF names in capitals work.",
   "On Windows and Linux, opening another PDF joins the running app instead of starting a second window.",
   "Drag PDFs onto the window to open them. A \"Drag and drop to open\" hint shows over the document area.",

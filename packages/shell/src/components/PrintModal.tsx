@@ -1,12 +1,22 @@
 // Print dialog — app-rendered (not the OS panel). Fixed-size popup.
 // Print tab: options on the left, big printer icon + action buttons on the
-// right. Print queue tab: the live system spooler queue (scrollable), each
-// job cancellable. Prints natively via CUPS; window.print() is a no-op in
-// macOS WKWebView.
+// right. Print queue tab: the live system spooler queue (scrollable) with a
+// progress bar per job, each job cancellable; sending a job switches here
+// and opens the OS's own queue too. Prints natively via CUPS;
+// window.print() is a no-op in macOS WKWebView.
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, HelpCircle, Printer, RefreshCw, Trash2, X } from "lucide-react";
-import { commands } from "../telos";
-import { useApp, type OpenDoc } from "../store";
+import {
+  Check,
+  ChevronDown,
+  ExternalLink,
+  HelpCircle,
+  Printer,
+  RefreshCw,
+  Trash2,
+  X,
+} from "lucide-react";
+import { commands, type PrintJobEntry } from "../telos";
+import { PRINT_ENDED, pollPrintQueue, useApp, type OpenDoc, type TrackedPrint } from "../store";
 
 function Dropdown({
   value,
@@ -91,6 +101,97 @@ function DuplexHelp() {
   );
 }
 
+/** Pages a print selection covers, for the progress bar. */
+function selectedPages(total: number, pageSet: string, range: string): number {
+  if (pageSet === "odd") return Math.ceil(total / 2);
+  if (pageSet === "even") return Math.floor(total / 2);
+  if (pageSet !== "custom" || !range.trim()) return total;
+  const pages = new Set<number>();
+  for (const part of range.split(",")) {
+    const m = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+    if (!m) continue;
+    const a = Number(m[1]);
+    const b = m[2] ? Number(m[2]) : a;
+    for (let p = Math.max(1, Math.min(a, b)); p <= Math.min(total, Math.max(a, b)); p++) pages.add(p);
+  }
+  return pages.size || total;
+}
+
+type Tone = "active" | "done" | "muted" | "error";
+
+/** Where a job is, as a bar: `pct` null = under way, amount unknown. */
+function jobProgress(
+  state: TrackedPrint["state"],
+  pagesDone: number | null,
+  expected: number,
+): { pct: number | null; label: string; tone: Tone } {
+  switch (state) {
+    case "sending":
+      return { pct: 5, label: "Sending to the printer…", tone: "active" };
+    case "sent":
+      return { pct: 12, label: "Sent — waiting for the print queue…", tone: "active" };
+    case "queued":
+      return { pct: 20, label: "Waiting in the queue", tone: "active" };
+    case "held":
+      return { pct: 20, label: "On hold", tone: "muted" };
+    case "printing":
+      if (pagesDone == null || expected <= 0) return { pct: null, label: "Printing…", tone: "active" };
+      return {
+        pct: 20 + (80 * Math.min(pagesDone, expected)) / expected,
+        label: `Printing page ${Math.min(pagesDone + 1, expected)} of ${expected}`,
+        tone: "active",
+      };
+    case "done":
+      return { pct: 100, label: "Printed", tone: "done" };
+    case "cancelled":
+      return { pct: 100, label: "Cancelled", tone: "muted" };
+    case "failed":
+      return { pct: 100, label: "Failed", tone: "error" };
+  }
+}
+
+function QueueRow({
+  title,
+  printer,
+  progress,
+  message,
+  onCancel,
+}: {
+  title: string;
+  printer: string;
+  progress: ReturnType<typeof jobProgress>;
+  message: string;
+  onCancel?: () => void;
+}) {
+  return (
+    <div className="queue-row">
+      <Printer size={16} />
+      <div className="queue-text">
+        <div className="queue-title">{title}</div>
+        <div className="queue-sub">
+          {printer ? `${printer} · ` : ""}
+          {progress.label}
+        </div>
+        <div
+          className={`queue-progress ${progress.tone} ${progress.pct == null ? "indeterminate" : ""}`}
+          role="progressbar"
+          aria-valuenow={progress.pct ?? undefined}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
+          <div className="queue-progress-fill" style={{ width: `${progress.pct ?? 35}%` }} />
+        </div>
+        {message && <div className={`queue-message ${progress.tone}`}>{message}</div>}
+      </div>
+      {onCancel && (
+        <button className="icon-btn danger" title="Cancel this job" onClick={onCancel}>
+          <Trash2 size={14} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function PrintModal({ doc, onClose }: { doc: OpenDoc; onClose: () => void }) {
   const showToast = useApp((s) => s.showToast);
   const [tab, setTab] = useState<"print" | "queue">("print");
@@ -104,9 +205,8 @@ export default function PrintModal({ doc, onClose }: { doc: OpenDoc; onClose: ()
   );
   const [reverse, setReverse] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [queue, setQueue] = useState<{ id: string; printer: string; size: string; when: string }[]>(
-    [],
-  );
+  const tracked = useApp((s) => s.printJobs);
+  const queue = useApp((s) => s.printQueue);
 
   useEffect(() => {
     commands.listPrinters().then(
@@ -118,40 +218,51 @@ export default function PrintModal({ doc, onClose }: { doc: OpenDoc; onClose: ()
     );
   }, []);
 
-  const refreshQueue = () => commands.printQueue().then(setQueue, () => setQueue([]));
-  useEffect(() => {
-    if (tab === "queue") void refreshQueue();
-  }, [tab]);
+  // The queue stays live while this popup is open.
+  useEffect(() => useApp.getState().watchPrintQueue(), []);
+  const refreshQueue = () => void pollPrintQueue();
 
   const cancelJob = async (jobId: string) => {
     try {
       await commands.cancelPrintJob(jobId);
-      void refreshQueue();
+      refreshQueue();
     } catch (e) {
       showToast(String(e));
     }
   };
 
+  const openSystemQueue = (target: string | null) =>
+    commands.openPrintQueue(target).catch((e) => showToast(String(e)));
+
   const print = async () => {
+    const app = useApp.getState();
+    const expected = selectedPages(doc.info.pages, pageSet, pages) * copies;
+    const key = app.startPrint({ title: doc.info.title, printer: printer || null, expected });
     setBusy(true);
+    setTab("queue");
     try {
-      await commands.printDocument(doc.info.id, {
+      const sent = await commands.printDocument(doc.info.id, {
         printer: printer || null,
+        title: doc.info.title,
         copies,
         pages: pageSet === "custom" && pages.trim() ? pages.trim() : null,
         pageSet: pageSet === "custom" ? "all" : pageSet,
         sides,
         reverse,
       });
-      showToast(`Sent to ${printer.replace(/_/g, " ") || "the default printer"}.`);
-      setTab("queue");
-      setTimeout(() => void refreshQueue(), 400);
+      app.printSent(key, sent);
+      void openSystemQueue(sent.printer ?? (printer || null));
     } catch (e) {
-      showToast(String(e));
+      app.printFailed(key, String(e));
     } finally {
       setBusy(false);
     }
   };
+
+  // This session's jobs first (with their outcome), then anything else
+  // waiting on the spooler.
+  const ours = new Set(tracked.flatMap((j) => (j.jobId ? [j.jobId] : [])));
+  const others = queue.filter((e: PrintJobEntry) => !ours.has(e.id) && !PRINT_ENDED.has(e.state));
 
   return (
     <div className="modal-overlay" onClick={busy ? undefined : onClose}>
@@ -267,32 +378,46 @@ export default function PrintModal({ doc, onClose }: { doc: OpenDoc; onClose: ()
             <div className="print-queue">
               <div className="queue-head">
                 <span>System print queue</span>
-                <button className="icon-btn" title="Refresh" onClick={() => void refreshQueue()}>
-                  <RefreshCw size={14} />
-                </button>
+                <span className="queue-head-actions">
+                  <button
+                    className="icon-btn"
+                    title="Open the system print queue"
+                    onClick={() => void openSystemQueue(printer || null)}
+                  >
+                    <ExternalLink size={14} />
+                  </button>
+                  <button className="icon-btn" title="Refresh" onClick={refreshQueue}>
+                    <RefreshCw size={14} />
+                  </button>
+                </span>
               </div>
               <div className="queue-list">
-                {queue.length === 0 && (
+                {tracked.length === 0 && others.length === 0 && (
                   <p className="panel-note">No jobs in the queue right now.</p>
                 )}
-                {queue.map((j) => (
-                  <div key={j.id} className="queue-row">
-                    <Printer size={16} />
-                    <div className="queue-text">
-                      <div className="queue-title">{j.id}</div>
-                      <div className="queue-sub">
-                        {j.printer}
-                        {j.when ? ` · ${j.when}` : ""}
-                      </div>
-                    </div>
-                    <button
-                      className="icon-btn danger"
-                      title="Cancel this job"
-                      onClick={() => void cancelJob(j.id)}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
+                {tracked.map((j) => (
+                  <QueueRow
+                    key={`ours-${j.key}`}
+                    title={j.title}
+                    printer={(j.printer ?? "").replace(/_/g, " ")}
+                    progress={jobProgress(j.state, j.pagesDone, j.expected)}
+                    message={j.message}
+                    onCancel={
+                      j.jobId && !PRINT_ENDED.has(j.state)
+                        ? () => void cancelJob(j.jobId!)
+                        : undefined
+                    }
+                  />
+                ))}
+                {others.map((e) => (
+                  <QueueRow
+                    key={e.id}
+                    title={e.title ?? e.id}
+                    printer={e.printer}
+                    progress={jobProgress(e.state, e.pagesDone, e.pagesTotal ?? 0)}
+                    message={e.message}
+                    onCancel={() => void cancelJob(e.id)}
+                  />
                 ))}
               </div>
               <div className="print-actions">

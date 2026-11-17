@@ -275,6 +275,14 @@ export default function LeftSidebar() {
     }
   };
 
+  // Tools asked for from elsewhere (Cmd/Ctrl+P runs Print).
+  const toolRequest = useApp((s) => s.toolRequest);
+  useEffect(() => {
+    const tool = toolRequest && TOOLS.find((candidate) => candidate.id === toolRequest.id);
+    if (tool) run(tool);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run only on a new request
+  }, [toolRequest]);
+
   const activeDoc = () => {
     const s = useApp.getState();
     return s.docs.find((d) => d.info.id === s.activeId) ?? s.docs[0] ?? null;

@@ -48,6 +48,23 @@ export interface TextWordEntry {
   line: number;
 }
 
+export type PrintJobState = "queued" | "held" | "printing" | "done" | "cancelled" | "failed";
+
+export interface PrintJobEntry {
+  /** "<printer>-<number>"; cancel takes it back. */
+  id: string;
+  printer: string;
+  /** Document name, where the spooler reports one (Windows). */
+  title: string | null;
+  state: PrintJobState;
+  /** What the spooler or printer says, e.g. "Processing page 3...". */
+  message: string;
+  pagesDone: number | null;
+  pagesTotal: number | null;
+  submittedMs: number | null;
+  when: string;
+}
+
 export interface PageObjectEntry {
   /** Index in the page's object list — valid until the next mutation. */
   index: number;
@@ -154,20 +171,24 @@ export const commands = {
   translateDocument: (id: number, language: string, title: string, engine: "local" | "google", apiKey: string) =>
     invoke<DocumentInfo>("translate_document", { id, language, title, engine, apiKey }),
   listPrinters: () => invoke<{ printers: string[]; default: string | null }>("list_printers"),
+  /** Returns the spooler job id (null where the spooler doesn't report one). */
   printDocument: (
     id: number,
     options: {
       printer: string | null;
+      title: string | null;
       copies: number;
       pages: string | null;
       pageSet: "all" | "odd" | "even";
       sides: "one-sided" | "two-sided-long-edge" | "two-sided-short-edge";
       reverse: boolean;
     },
-  ) => invoke<void>("print_document", { id, options }),
-  printQueue: () =>
-    invoke<{ id: string; printer: string; size: string; when: string }[]>("print_queue"),
+  ) => invoke<{ jobId: string | null; printer: string | null }>("print_document", { id, options }),
+  /** Every job on the spooler, plus how the jobs in `track` ended if they have. */
+  printQueue: (track: string[]) => invoke<PrintJobEntry[]>("print_queue", { track }),
   cancelPrintJob: (jobId: string) => invoke<void>("cancel_print_job", { jobId }),
+  /** Show the OS's own queue window (Print Center / Windows printer queue). */
+  openPrintQueue: (printer: string | null) => invoke<void>("open_print_queue", { printer }),
   /** Start a visual compare: pick two PDFs → session for the Compare tab. */
   startCompare: () =>
     invoke<{ id: number; nameA: string; nameB: string; pages: number } | null>("start_compare"),

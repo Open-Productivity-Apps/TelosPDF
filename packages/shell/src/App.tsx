@@ -46,6 +46,7 @@ export default function App() {
   const reduceMotion = usePrefs((s) => s.reduceMotion);
   const theme = usePrefs((s) => s.theme);
   const oledDark = usePrefs((s) => s.oledDark);
+  const themedPages = usePrefs((s) => s.themedPages);
   const updateAvailable = useUpdate((s) => s.available);
   const installUpdate = useUpdate((s) => s.installUpdate);
   const checkForUpdate = useUpdate((s) => s.checkForUpdate);
@@ -137,11 +138,16 @@ export default function App() {
       } else {
         delete document.documentElement.dataset.oled;
       }
+      if (themedPages) {
+        document.documentElement.dataset.themedPages = "true";
+      } else {
+        delete document.documentElement.dataset.themedPages;
+      }
     };
     apply();
     media.addEventListener("change", apply);
     return () => media.removeEventListener("change", apply);
-  }, [theme, oledDark]);
+  }, [theme, oledDark, themedPages]);
 
   const [defaultPrompt, setDefaultPrompt] = useState(false);
   const unlockRequest = useApp((s) => s.unlockRequest);
@@ -309,6 +315,13 @@ export default function App() {
         e.preventDefault();
         const s = useApp.getState();
         void (e.shiftKey ? s.redo() : s.undo());
+        return;
+      }
+      // Cmd/Ctrl+P — Print. Also keeps WebView2 (Windows) from printing the
+      // app's own interface instead of the document.
+      if ((e.metaKey || e.ctrlKey) && key === "p") {
+        e.preventDefault();
+        useApp.getState().requestTool("print");
         return;
       }
       // Cmd/Ctrl+S — Save As (the original file is never overwritten).

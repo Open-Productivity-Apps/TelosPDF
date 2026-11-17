@@ -2518,6 +2518,44 @@ fn cups_bin(name: &str) -> String {
     }
 }
 
+/// A CUPS tool with untranslated output: the parsers below read lpstat's
+/// labels ("Status:", "Alerts:"), which otherwise follow the user's locale.
+#[cfg(not(target_os = "windows"))]
+fn cups(name: &str) -> std::process::Command {
+    let mut cmd = command(cups_bin(name));
+    cmd.env("LC_ALL", "C");
+    cmd
+}
+
+/// Run a PowerShell snippet and return its stdout (Windows print spooler).
+#[cfg(target_os = "windows")]
+fn powershell(script: &str) -> Result<String, String> {
+    let out = command("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .map_err(|e| format!("could not run PowerShell: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+/// A value for a single-quoted PowerShell string.
+#[cfg(target_os = "windows")]
+fn ps_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// The Windows default printer — where the shell print verb sends jobs.
+#[cfg(target_os = "windows")]
+fn windows_default_printer() -> Option<String> {
+    powershell("(Get-CimInstance Win32_Printer -Filter 'Default=TRUE').Name")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Available printers and the default (from CUPS `lpstat`). On Windows the
 /// list is empty and we print via the shell "print" verb instead.
 #[derive(Serialize)]
@@ -2531,7 +2569,7 @@ struct PrinterList {
 fn list_printers() -> PrinterList {
     #[cfg(not(target_os = "windows"))]
     {
-        let printers = command(cups_bin("lpstat"))
+        let printers = cups("lpstat")
             .arg("-a")
             .output()
             .ok()
@@ -2543,17 +2581,18 @@ fn list_printers() -> PrinterList {
                     .collect()
             })
             .unwrap_or_default();
-        let default = command(cups_bin("lpstat"))
+        let default = cups("lpstat")
             .arg("-d")
             .output()
             .ok()
             .filter(|o| o.status.success())
+            // "system default destination: X", or "no system default
+            // destination" (no colon) when none is set.
             .and_then(|o| {
                 String::from_utf8_lossy(&o.stdout)
-                    .rsplit(':')
-                    .next()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
+                    .split_once(':')
+                    .map(|(_, name)| name.trim().to_string())
+                    .filter(|name| !name.is_empty())
             });
         PrinterList { printers, default }
     }
@@ -2571,6 +2610,8 @@ fn list_printers() -> PrinterList {
 #[serde(rename_all = "camelCase")]
 struct PrintOptions {
     printer: Option<String>,
+    /// Job name shown in queues (the document title).
+    title: Option<String>,
     copies: u32,
     /// Custom page range like "1-3,5" (empty = all).
     pages: Option<String>,
@@ -2581,8 +2622,29 @@ struct PrintOptions {
     reverse: bool,
 }
 
+/// What a sent print hands back, so the app can follow the job.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PrintSent {
+    /// Spooler job id ("Canon_LBP2900-42"). None where the spooler doesn't
+    /// report one (the Windows shell print verb).
+    job_id: Option<String>,
+    printer: Option<String>,
+}
+
+/// The job id in `lp`'s reply: "request id is Canon_LBP2900-42 (1 file(s))".
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+fn lp_job_id(stdout: &str) -> Option<String> {
+    stdout
+        .split("request id is ")
+        .nth(1)?
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
+}
+
 #[tauri::command]
-async fn print_document(id: u32, options: PrintOptions) -> Result<(), String> {
+async fn print_document(id: u32, options: PrintOptions) -> Result<PrintSent, String> {
     let work = {
         let reg = REGISTRY.lock().unwrap();
         reg.docs.get(&id).ok_or("unknown document")?.work().clone()
@@ -2591,10 +2653,14 @@ async fn print_document(id: u32, options: PrintOptions) -> Result<(), String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let mut cmd = command(cups_bin("lp"));
+        let mut cmd = cups("lp");
         cmd.arg("-n").arg(copies.to_string());
-        if let Some(name) = options.printer.as_deref().filter(|p| !p.is_empty()) {
+        let printer = options.printer.filter(|p| !p.is_empty());
+        if let Some(name) = printer.as_deref() {
             cmd.arg("-d").arg(name);
+        }
+        if let Some(title) = options.title.as_deref().filter(|t| !t.trim().is_empty()) {
+            cmd.arg("-t").arg(title);
         }
         if let Some(range) = options
             .pages
@@ -2626,11 +2692,18 @@ async fn print_document(id: u32, options: PrintOptions) -> Result<(), String> {
                 String::from_utf8_lossy(&out.stderr)
             ));
         }
-        Ok(())
+        let job_id = lp_job_id(&String::from_utf8_lossy(&out.stdout));
+        let printer = printer.or_else(|| {
+            job_id
+                .as_deref()
+                .and_then(|id| id.rsplit_once('-'))
+                .map(|(p, _)| p.to_string())
+        });
+        Ok(PrintSent { job_id, printer })
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = options;
+        let _ = (options, copies);
         let status = command("cmd")
             .args(["/C", "start", "/min", ""])
             .arg("/print")
@@ -2638,19 +2711,73 @@ async fn print_document(id: u32, options: PrintOptions) -> Result<(), String> {
             .status()
             .map_err(|e| format!("could not print: {e}"))?;
         if status.success() {
-            Ok(())
+            Ok(PrintSent {
+                job_id: None,
+                printer: windows_default_printer(),
+            })
         } else {
             Err("printing failed".into())
         }
     }
 }
 
-/// Cancel a queued print job by its CUPS id (e.g. "Canon_LBP2900-42").
+/// Show the operating system's own print queue window.
+#[tauri::command]
+fn open_print_queue(printer: Option<String>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = printer;
+        let opens = |args: &[&str]| {
+            command("/usr/bin/open")
+                .args(args)
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        // macOS 26+: Print Center holds every queue. It has to come to the
+        // front: opened in the background it quits within seconds. Older
+        // macOS: Printers settings, where each printer has its queue.
+        let opened = opens(&["-b", "com.apple.printcenter"])
+            || opens(&["x-apple.systempreferences:com.apple.Print-Scan-Settings.extension"])
+            || opens(&["/System/Library/PreferencePanes/PrintAndFax.prefPane"]);
+        if opened {
+            Ok(())
+        } else {
+            Err("Could not open the print queue.".into())
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let name = printer
+            .filter(|p| !p.is_empty())
+            .or_else(windows_default_printer)
+            .ok_or("No printer to show the queue for.")?;
+        command("rundll32.exe")
+            .args(["printui.dll,PrintUIEntry", "/o", "/n"])
+            .arg(name)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("could not open the print queue: {e}"))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // Linux: system-config-printer's job viewer, where installed.
+        let mut cmd = command("system-config-printer");
+        cmd.arg("--show-jobs");
+        if let Some(name) = printer.filter(|p| !p.is_empty()) {
+            cmd.arg(name);
+        }
+        cmd.spawn()
+            .map(|_| ())
+            .map_err(|_| "No print queue viewer is installed (system-config-printer).".into())
+    }
+}
+
+/// Cancel a queued print job by its spooler id (e.g. "Canon_LBP2900-42").
 #[tauri::command]
 fn cancel_print_job(job_id: String) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
     {
-        let out = command(cups_bin("cancel"))
+        let out = cups("cancel")
             .arg(&job_id)
             .output()
             .map_err(|e| format!("could not cancel: {e}"))?;
@@ -2662,57 +2789,209 @@ fn cancel_print_job(job_id: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = job_id;
-        Err("Cancel from the Windows print queue.".into())
+        let (printer, number) = job_id
+            .rsplit_once('-')
+            .filter(|(_, n)| n.chars().all(|c| c.is_ascii_digit()))
+            .ok_or("unknown print job")?;
+        powershell(&format!(
+            "Remove-PrintJob -PrinterName {} -ID {number}",
+            ps_quote(printer)
+        ))
+        .map(|_| ())
     }
 }
 
-/// One job in the system print queue (from CUPS `lpstat -o`).
-#[derive(Serialize)]
+/// One job in the system print queue, as the queue popup shows it.
+#[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct PrintJob {
+    /// "<printer>-<number>" on every platform; cancel takes it back.
     id: String,
     printer: String,
-    size: String,
+    /// Document name, where the spooler reports one (Windows).
+    title: Option<String>,
+    /// "queued" | "held" | "printing" | "done" | "cancelled" | "failed"
+    state: &'static str,
+    /// What the spooler or printer says, e.g. "Processing page 3...".
+    message: String,
+    /// Pages finished so far, when known.
+    pages_done: Option<u32>,
+    /// Pages in the job, when the spooler knows.
+    pages_total: Option<u32>,
+    /// Submission time in ms since the epoch, when known (Windows), to find
+    /// a job the shell print verb queued without reporting its id.
+    submitted_ms: Option<u64>,
     when: String,
 }
 
-/// The current system print queue — jobs from this app and anywhere else,
-/// still pending on the spooler.
+/// The page a status message says is under way ("Processing page 3...",
+/// "Printing page 2, 45% complete").
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+fn page_under_way(message: &str) -> Option<u32> {
+    let lower = message.to_ascii_lowercase();
+    let rest = &lower[lower.find("page ")? + 5..];
+    rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+}
+
+/// Job state from CUPS job-state-reasons. Jobs listed by `-W completed`
+/// have all ended; the reasons only say how.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+fn cups_job_state(reasons: &str, finished: bool) -> &'static str {
+    let has = |word: &str| reasons.split_whitespace().any(|r| r.contains(word));
+    if finished {
+        if has("canceled") {
+            "cancelled"
+        } else if has("aborted") || has("error") || has("unsupported") || has("insufficient") {
+            "failed"
+        } else {
+            "done"
+        }
+    } else if has("job-printing") || has("job-transforming") {
+        "printing"
+    } else if has("hold") || has("held") {
+        "held"
+    } else {
+        "queued"
+    }
+}
+
+/// Parse `lpstat -l -o` in the C locale. Each job is a header line
+/// (id, user, size, date) followed by indented Status/Alerts lines.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+fn parse_lpstat_jobs(text: &str, finished: bool) -> Vec<PrintJob> {
+    let mut jobs: Vec<PrintJob> = Vec::new();
+    for line in text.lines() {
+        if !line.starts_with(char::is_whitespace) {
+            let mut parts = line.split_whitespace();
+            let Some(id) = parts.next() else {
+                continue;
+            };
+            let _user = parts.next();
+            let _size = parts.next();
+            jobs.push(PrintJob {
+                id: id.to_string(),
+                printer: id
+                    .rsplit_once('-')
+                    .map_or(id, |(printer, _)| printer)
+                    .replace('_', " "),
+                title: None,
+                state: if finished { "done" } else { "queued" },
+                message: String::new(),
+                pages_done: None,
+                pages_total: None,
+                submitted_ms: None,
+                when: parts.collect::<Vec<_>>().join(" "),
+            });
+            continue;
+        }
+        let Some(job) = jobs.last_mut() else {
+            continue;
+        };
+        let line = line.trim();
+        if let Some(status) = line.strip_prefix("Status:") {
+            job.message = status.trim().to_string();
+        } else if let Some(reasons) = line.strip_prefix("Alerts:") {
+            job.state = cups_job_state(reasons, finished);
+        }
+    }
+    for job in &mut jobs {
+        if job.state == "printing" {
+            job.pages_done = page_under_way(&job.message).map(|p| p.saturating_sub(1));
+        }
+    }
+    jobs
+}
+
+/// Windows JobStatus flags ("Printing, Retained") to a job state.
+#[cfg(target_os = "windows")]
+fn windows_job_state(status: &str) -> &'static str {
+    let has = |flag: &str| status.split(", ").any(|f| f == flag);
+    if has("Deleting") || has("Deleted") {
+        "cancelled"
+    } else if has("Printed") || has("Complete") {
+        "done"
+    } else if has("Printing") || has("Spooling") || has("RenderingLocally") {
+        "printing"
+    } else if has("Paused") {
+        "held"
+    } else {
+        "queued"
+    }
+}
+
+/// The current system print queue — jobs from this app and anywhere else —
+/// plus how the jobs in `track` ended, if they already have.
 #[tauri::command]
-fn print_queue() -> Vec<PrintJob> {
+fn print_queue(track: Vec<String>) -> Vec<PrintJob> {
     #[cfg(not(target_os = "windows"))]
     {
-        let text = command(cups_bin("lpstat"))
-            .arg("-o")
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default();
-        text.lines()
-            .filter_map(|line| {
-                let mut parts = line.split_whitespace();
-                let id = parts.next()?.to_string();
-                let printer = id
-                    .rsplit_once('-')
-                    .map(|(p, _)| p.replace('_', " "))
-                    .unwrap_or_else(|| id.clone());
-                let _user = parts.next();
-                let size = parts.next().unwrap_or("").to_string();
-                let when = parts.collect::<Vec<_>>().join(" ");
-                Some(PrintJob {
-                    id,
-                    printer,
-                    size,
-                    when,
-                })
-            })
-            .collect()
+        let lpstat = |cmd: &mut std::process::Command| {
+            cmd.output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default()
+        };
+        let mut jobs = parse_lpstat_jobs(&lpstat(cups("lpstat").args(["-l", "-o"])), false);
+        let ended: Vec<&String> = track
+            .iter()
+            .filter(|id| !jobs.iter().any(|j| &&j.id == id))
+            .collect();
+        let printers: std::collections::BTreeSet<&str> = ended
+            .iter()
+            .filter_map(|id| id.rsplit_once('-').map(|(printer, _)| printer))
+            .collect();
+        if !printers.is_empty() {
+            let destinations = printers.into_iter().collect::<Vec<_>>().join(",");
+            let history = lpstat(cups("lpstat").args(["-W", "completed", "-l", "-o", &destinations]));
+            jobs.extend(
+                parse_lpstat_jobs(&history, true)
+                    .into_iter()
+                    .filter(|j| ended.contains(&&j.id)),
+            );
+        }
+        jobs
     }
     #[cfg(target_os = "windows")]
     {
-        Vec::new()
+        let _ = track;
+        let script = "$ErrorActionPreference='SilentlyContinue'; \
+            ConvertTo-Json -Compress -InputObject @(Get-Printer | ForEach-Object { Get-PrintJob -PrinterName $_.Name } | ForEach-Object { \
+            [pscustomobject]@{ id=$_.Id; printer=$_.PrinterName; title=$_.DocumentName; status=[string]$_.JobStatus; \
+            total=$_.TotalPages; done=$_.PagesPrinted; \
+            submitted=([DateTimeOffset]$_.SubmittedTime).ToUnixTimeMilliseconds(); when=$_.SubmittedTime.ToString('g') } })";
+        let Ok(json) = powershell(script) else {
+            return Vec::new();
+        };
+        let rows: Vec<serde_json::Value> = serde_json::from_str(json.trim()).unwrap_or_default();
+        rows.iter()
+            .filter_map(|row| {
+                let printer = row["printer"].as_str()?.to_string();
+                let status = row["status"].as_str().unwrap_or("");
+                let state = windows_job_state(status);
+                let number = |key: &str| row[key].as_u64().map(|n| n as u32).filter(|n| *n > 0);
+                Some(PrintJob {
+                    id: format!("{printer}-{}", row["id"].as_u64()?),
+                    title: row["title"].as_str().map(str::to_string),
+                    state,
+                    // Normal states speak for themselves; flags like Error
+                    // or PaperOut are what the user needs to see.
+                    message: if matches!(state, "queued" | "printing") && !status.is_empty()
+                        && status.split(", ").any(|f| {
+                            matches!(f, "Error" | "Offline" | "PaperOut" | "Blocked" | "UserIntervention")
+                        }) {
+                        status.to_string()
+                    } else {
+                        String::new()
+                    },
+                    pages_done: row["done"].as_u64().map(|n| n as u32),
+                    pages_total: number("total"),
+                    submitted_ms: row["submitted"].as_u64(),
+                    when: row["when"].as_str().unwrap_or("").to_string(),
+                    printer,
+                })
+            })
+            .collect()
     }
 }
 
@@ -3208,6 +3487,7 @@ pub fn run() {
             print_document,
             print_queue,
             cancel_print_job,
+            open_print_queue,
             unlock_document,
             protect_document,
             remove_password,
@@ -3242,4 +3522,84 @@ pub fn run() {
             }
             let _ = (app, &event);
         });
+}
+
+#[cfg(test)]
+mod print_tests {
+    use super::{lp_job_id, page_under_way, parse_lpstat_jobs};
+
+    // Captured from a real queue (macOS, CUPS 2.3, a remote Canon on a Pi).
+    const ACTIVE: &str = "\
+Canon_LBP2900_Pi-57     Siddharth       907264   Tue Nov 17 05:19:58 2026
+\tStatus: Processing page 3...
+\tAlerts: job-printing
+\tqueued for Canon_LBP2900_Pi
+Canon_LBP2900_Pi-58     Siddharth       907264   Tue Nov 17 05:21:46 2026
+\tStatus: Waiting for printer to become available.
+\tAlerts: job-queued
+\tqueued for Canon_LBP2900_Pi
+Office-Laser-3     Siddharth       1024   Tue Nov 17 05:22:00 2026
+\tStatus: 
+\tAlerts: job-hold-until-specified
+\tqueued for Office-Laser
+";
+
+    const COMPLETED: &str = "\
+Canon_LBP2900_Pi-57     Siddharth       907264   Tue Nov 17 05:21:00 2026
+\tStatus: 
+\tAlerts: processing-to-stop-point
+\tqueued for Canon_LBP2900_Pi
+Canon_LBP2900_Pi-42     Siddharth       907264   Sun Nov 15 13:31:32 2026
+\tStatus: 
+\tAlerts: job-canceled-by-user
+\tqueued for Canon_LBP2900_Pi
+Canon_LBP2900_Pi-43     Siddharth       907264   Sun Nov 15 15:38:16 2026
+\tStatus: Unable to send data to printer.
+\tAlerts: aborted-by-system
+\tqueued for Canon_LBP2900_Pi
+";
+
+    #[test]
+    fn active_jobs_report_state_progress_and_printer_message() {
+        let jobs = parse_lpstat_jobs(ACTIVE, false);
+        let summary: Vec<_> = jobs
+            .iter()
+            .map(|j| (j.id.as_str(), j.printer.as_str(), j.state, j.pages_done))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("Canon_LBP2900_Pi-57", "Canon LBP2900 Pi", "printing", Some(2)),
+                ("Canon_LBP2900_Pi-58", "Canon LBP2900 Pi", "queued", None),
+                ("Office-Laser-3", "Office-Laser", "held", None),
+            ]
+        );
+        assert_eq!(jobs[1].message, "Waiting for printer to become available.");
+        assert_eq!(jobs[0].when, "Tue Nov 17 05:19:58 2026");
+    }
+
+    #[test]
+    fn finished_jobs_say_how_they_ended() {
+        let states: Vec<_> = parse_lpstat_jobs(COMPLETED, true)
+            .iter()
+            .map(|j| j.state)
+            .collect();
+        assert_eq!(states, ["done", "cancelled", "failed"]);
+    }
+
+    #[test]
+    fn reads_the_job_id_lp_reports() {
+        assert_eq!(
+            lp_job_id("request id is Canon_LBP2900_Pi-57 (1 file(s))\n").as_deref(),
+            Some("Canon_LBP2900_Pi-57")
+        );
+        assert_eq!(lp_job_id(""), None);
+    }
+
+    #[test]
+    fn finds_the_page_under_way() {
+        assert_eq!(page_under_way("Processing page 3..."), Some(3));
+        assert_eq!(page_under_way("Printing page 12, 45% complete."), Some(12));
+        assert_eq!(page_under_way("Waiting for printer."), None);
+    }
 }
